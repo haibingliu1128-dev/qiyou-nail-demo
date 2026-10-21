@@ -20,13 +20,13 @@ module.exports = async function (app) {
   app.post('/staff', async (req, reply) => { const r = await app.ctx.perms.create(req.user, req.body || {}, req.ip); reply.code(201); return r; });
   app.put('/staff/:id', async req => app.ctx.perms.update(req.user, req.params.id, req.body || {}, req.ip));
   app.get('/dashboard', async () => ({ ...merchant.dashboard(), inbox: app.ctx.reviews.counts() }));
-  app.get('/bookings', async req => merchant.bookings(req.query.scope || 'today', req.query.date));
+  app.get('/bookings', async req => merchant.bookings(req.query.scope || 'today', req.query.date, req.user));
   for (const op of ['accept', 'reject', 'arrive', 'done', 'noshow', 'cancel'])
     app.post(`/bookings/:id/${op}`, async req => booking.merchantAction(req.user, req.params.id, op, { ip: req.ip }));
-  app.get('/noshows', async () => merchant.noShows());
-  app.get('/customers', async req => merchant.customers(req.query.q));
-  app.post('/customers/blacklist', async req => { const b = req.body || {}; return merchant.setBlacklist(req.user, String(b.phone || ''), b.on !== false, b.reason, req.ip); });
-  app.post('/customers/:phone/clear', async req => merchant.clearRestriction(req.user, req.params.phone, req.ip));
+  app.get('/noshows', async req => merchant.noShows(req.user));
+  app.get('/customers', async req => merchant.customers(req.query.q, req.user));
+  app.post('/customers/blacklist', async req => merchant.setBlacklist(req.user, req.body || {}, req.ip));   // {customerId|phone, on, reason}
+  app.post('/customers/:key/clear', async req => merchant.clearRestriction(req.user, req.params.key, req.ip));   // key = 顾客 ID 或手机号
   app.get('/settings', async () => merchant.getSettings());
   app.put('/settings', async req => merchant.updateSettings(req.user, req.body || {}, req.ip));
   app.post('/settings/reset', async req => merchant.resetSettings(req.user, req.ip));

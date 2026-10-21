@@ -17,7 +17,11 @@ const ACCOUNTS = [
   { username: 'staff2', password: process.env.DEMO_STAFF2_PASSWORD || 'staff2026', role: 'staff', display_name: '前台小林（演示）' },
 ];
 async function ensureAccounts(repo, auth) {
-  for (const a of ACCOUNTS) if (!repo.getMerchantByUsername(a.username)) repo.insertMerchant({ ...a, password_hash: await auth.hashPassword(a.password) });
+  for (const a of ACCOUNTS) if (!repo.getMerchantByUsername(a.username)) {
+    repo.insertMerchant({ ...a, password_hash: await auth.hashPassword(a.password) });
+    // 新店员显式写入默认权限（处理预约开，其余关）
+    if (a.role === 'staff') repo.updateMerchant(repo.getMerchantByUsername(a.username).id, { perms: JSON.stringify(require('./services/perms').DEFAULTS) });
+  }
 }
 function seedImage(images, name) {
   if (!images || !name) return [];

@@ -17,34 +17,51 @@ function createMerchantService(ctx, B) {
     const days = []; for (let i = 0; i < 7; i++) { const d = U.ymd(U.addDays(U.parseYmd(a), i)); const r = s.week.find(x => x.date === d); days.push({ date: d, amount: r ? r.s / 100 : 0 }); }
     return { today: s.today, pending: s.pending, upcoming: s.upcoming, noshow30: s.noshow30, blacklisted: s.blacklisted, week: days };
   }
-  function bookings(scope, date) {
+  function bookings(scope, date, user) {
     const t = today();
     let rows;
     if (scope === 'today') rows = repo.listBookings({ from: date || t, to: date || t });
     else if (scope === 'pending') rows = repo.listBookings({ from: U.ymd(U.addDays(new Date(), -1)), statuses: ['pending', 'awaiting_payment'] });
     else if (scope === 'upcoming') rows = repo.listBookings({ from: t, statuses: ['pending', 'confirmed', 'arrived', 'awaiting_payment'] });
     else rows = repo.listBookings({ limit: 200 });
-    return rows.map(b => B.dto(b, { merchant: true }));
+    return rows.map(b => B.dto(b, { merchant: true, user }));
   }
-  function customers(q) {
-    const C = B.settings();
-    return repo.listCustomers(q && String(q).trim()).map(c => {
+  function customers(q, user) {
+    const C = B.settings(), full = Perm.can(user, 'customer.phone');
+    q = q && String(q).trim();
+    let rows = repo.listCustomers(q);
+    // 未授权完整手机号：数字搜索只能匹配打码后可见的部分（前 3 / 后 4 位）或完整号码，防止用中间位反推号码
+    if (!full && q && /\d/.test(q)) rows = rows.filter(c => (c.name && c.name.includes(q)) || c.phone === q || U.maskPhone(c.phone).includes(q));
+    return rows.map(c => {
       const r = B.restriction(C, c);
-      return { id: c.id, phone: c.phone, name: c.name, blacklisted: !!c.blacklisted, blackReason: c.black_reason, total: c.total, noshowTotal: c.noshow_total,
+      return { id: c.id, phone: full ? c.phone : U.maskPhone(c.phone), phoneMasked: !full, name: c.name, blacklisted: !!c.blacklisted, blackReason: c.black_reason, total: c.total, noshowTotal: c.noshow_total,
         noshowInWindow: r.count, restricted: r.restricted ? { act: r.act, until: r.until } : null, verified: !!c.verified_at,
         rateLockedUntil: c.rate_lock_until > Date.now() ? c.rate_lock_until : null };
     });
   }
-  function setBlacklist(user, phone, on, reason, ip) {
-    if (!U.isPhone(phone)) throw new AppError(400, 'BAD_PHONE', '请输入正确的 11 位手机号');
-    const c = repo.ensureCustomer(phone);
+  /** 按顾客 ID 或完整手机号定位（店员看到的是打码号码，界面用 ID 操作） */
+  function findCustomer(key) {
+    key = String(key == null ? '' : key).trim();
+    if (U.isPhone(key)) return repo.getCustomerByPhone(key);
+    if (/^\d{1,9}$/.test(key)) return repo.getCustomer(+key);
+    return null;
+  }
+  function setBlacklist(user, b, ip) {
+    Perm.need(user, 'customer.blacklist');
+    const on = b.on !== false, reason = b.reason;
+    let c;
+    if (b.customerId != null) { c = findCustomer(String(b.customerId)); if (!c) throw new AppError(404, 'NOT_FOUND', '顾客不存在'); }
+    else { const phone = String(b.phone || ''); if (!U.isPhone(phone)) throw new AppError(400, 'BAD_PHONE', '请输入正确的 11 位手机号'); c = repo.ensureCustomer(phone); }
+    const phone = c.phone;
     repo.updateCustomer(c.id, { blacklisted: on ? 1 : 0, black_reason: on ? String(reason || '').slice(0, 40) || null : null });
     audit(user, on ? 'customer.blacklist' : 'customer.unblacklist', 'customer:' + phone, { reason }, ip);
     bus.emit('change', { type: 'customer' });
-    return { phone, blacklisted: !!on };
+    return { customerId: c.id, phone: Perm.phoneFor(user, phone), blacklisted: !!on };
   }
-  function clearRestriction(user, phone, ip) {
-    const c = repo.getCustomerByPhone(phone); if (!c) throw new AppError(404, 'NOT_FOUND', '顾客不存在');
+  function clearRestriction(user, key, ip) {
+    Perm.need(user, 'customer.blacklist');
+    const c = findCustomer(key); if (!c) throw new AppError(404, 'NOT_FOUND', '顾客不存在');
+    const phone = c.phone;
     repo.updateCustomer(c.id, { restrict_cleared_at: Date.now(), rate_lock_until: null });
     audit(user, 'customer.clear_restriction', 'customer:' + phone, null, ip);
     bus.emit('change', { type: 'customer' });
@@ -103,7 +120,7 @@ function createMerchantService(ctx, B) {
   function deleteService(user, id, ip) {
     Perm.need(user, 'service.manage'); repo.updateService(+id, { active: 0 }); audit(user, 'service.delete', 'service:' + id, null, ip); bus.emit('change', { type: 'service' }); return { ok: true };
   }
-  function noShows() { return repo.recentNoShows(20).map(b => B.dto(b, { merchant: true })); }
+  function noShows(user) { return repo.recentNoShows(20).map(b => B.dto(b, { merchant: true, user })); }
   function auditLog(user) { Perm.ownerOnly(user, '查看操作日志'); const us = new Map(repo.listMerchants().map(u => [u.id, u]));
     return repo.listAudit(150).map(a => { const u = a.actor_type === 'merchant' && a.actor_id ? us.get(a.actor_id) : null;
       return { ...a, actorDisplay: u ? u.display_name : null, actorRole: u ? u.role : null, detail: a.detail ? JSON.parse(a.detail) : null }; }); }

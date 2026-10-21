@@ -1,4 +1,5 @@
 'use strict';
+const Perm = require('./perms');
 // 预约业务规则（全部在服务端执行）：时段可用性、并发防超卖、个人限额、防刷、取消时限、爽约限制、定金、审核
 const U = require('../lib/util');
 const Rules = require('./rules');
@@ -57,7 +58,7 @@ function createBookingService(ctx) {
       holdUntil: b.status === 'awaiting_payment' ? b.hold_until : null, noshowBy: b.noshow_by || null, cancelledBy: b.cancelled_by || null,
       seed: !!b.seed, createdAt: b.created_at,
     };
-    if (opt.merchant) Object.assign(o, { phone: b.phone, custNoshow: b.cust_noshow || 0, custBlack: !!b.cust_black });
+    if (opt.merchant) { const ph = opt.user ? Perm.phoneFor(opt.user, b.phone) : b.phone; Object.assign(o, { phone: ph, phoneMasked: ph !== b.phone, customerId: b.customer_id, custNoshow: b.cust_noshow || 0, custBlack: !!b.cust_black }); }
     else o.phone = U.maskPhone(b.phone);
     if (opt.C) { const r = cancelBlock(opt.C, b, opt.cust); o.canCancel = !r; o.cancelBlock = r; }
     return o;
@@ -264,6 +265,7 @@ function createBookingService(ctx) {
   };
   async function merchantAction(user, id, op, meta = {}) {
     const m = MOPS[op]; if (!m) throw new AppError(400, 'BAD_OP', '未知操作');
+    Perm.need(user, 'booking.handle');
     const r = repo.tx(() => {
       const b = repo.getBooking(+id); if (!b) throw new AppError(404, 'NOT_FOUND', '预约不存在');
       if (!m.from.includes(b.status)) throw new AppError(409, 'BAD_STATE', `当前状态「${STATUS_TEXT[b.status]}」不能执行该操作`);
@@ -279,7 +281,7 @@ function createBookingService(ctx) {
     });
     const refunded = m.refund && r.paid ? await refund(r.id, 'merchant_' + op) : false;
     bus.emit('change', { type: 'booking.' + op, id: r.id });
-    return { booking: dto(repo.getBooking(r.id), { merchant: true }), refunded };
+    return { booking: dto(repo.getBooking(r.id), { merchant: true, user }), refunded };
   }
 
   // ---------- 定时任务：过期待支付、过期待确认、超时未到自动爽约 ----------

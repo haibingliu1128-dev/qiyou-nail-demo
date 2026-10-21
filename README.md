@@ -23,7 +23,7 @@ npm run backup         # SQLite 热备份到 backups/
 
 - 顾客端：`http://<host>:3100/`
 - 商家端：`http://<host>:3100/#merchant`（或 `/m`）
-- 演示账号：店主 `owner / qiyou2026`（全部权限）；店员 `staff / staff2026`（美甲师（演示））、`staff2 / staff2026`（前台小林（演示））。店员默认可以处理预约、拉黑/解除，其余操作需店主在「店员权限」里逐项授权（见下文）。密码可用 `DEMO_OWNER_PASSWORD` / `DEMO_STAFF_PASSWORD` / `DEMO_STAFF2_PASSWORD` 在**首次启动前**修改。
+- 演示账号：店主 `owner / qiyou2026`（全部权限）；店员 `staff / staff2026`（美甲师（演示））、`staff2 / staff2026`（前台小林（演示））。店员默认只开「处理预约」，看到的顾客手机号默认打码；拉黑、评价、反馈等需店主在「店员权限」里逐项授权（见下文）。密码可用 `DEMO_OWNER_PASSWORD` / `DEMO_STAFF_PASSWORD` / `DEMO_STAFF2_PASSWORD` 在**首次启动前**修改。
 - 开发模式看验证码：点「获取验证码」后，验证码直接显示在弹层里（`DEV_SHOW_SMS_CODE=1`）；也会写进服务日志 `[mock-sms] 手机号 验证码 xxxxxx`，并可通过 `GET /api/dev/sms-outbox?phone=手机号` 查看最近 10 条。**上线必须设为 0**（此时接口不再返回验证码、发件箱接口关闭）。
 
 ## 部署到 Render（免费 Web Service）
@@ -135,12 +135,12 @@ awaiting_payment / pending / confirmed ─顾客或商家取消→ cancelled（�
 | POST | /api/merchant/staff `{username,name,password}` | 新增店员账号，默认无任何授权（仅店主） |
 | PUT | /api/merchant/staff/:id `{perms,active,name,password}` | 修改授权（部分更新，未知权限项 400）/ 停用 / 改名 / 重置密码；停用或重置密码会让该店员已登录的会话立即失效（仅店主） |
 | GET | /api/merchant/dashboard | 今日/待确认/待服务/本周营业额估算 |
-| GET | /api/merchant/bookings?scope=today\|upcoming\|pending\|all | |
-| POST | /api/merchant/bookings/:id/{accept,reject,arrive,done,noshow,cancel} | 状态校验 + 自动退款/定金不退 |
-| GET | /api/merchant/noshows | 最近爽约记录（自动/手动） |
-| GET | /api/merchant/customers?q= | 顾客、爽约次数、受限/黑名单 |
-| POST | /api/merchant/customers/blacklist `{phone,on,reason}` | 拉黑/移出 |
-| POST | /api/merchant/customers/:phone/clear | 解除爽约限制与频率锁 |
+| GET | /api/merchant/bookings?scope=today\|upcoming\|pending\|all | 预约列表（店员可只读查看；含 `customerId`；手机号按权限打码，`phoneMasked` 标记） |
+| POST | /api/merchant/bookings/:id/{accept,reject,arrive,done,noshow,cancel} | 状态校验 + 自动退款/定金不退（需「处理预约」；返回的预约详情同样按权限打码） |
+| GET | /api/merchant/noshows | 最近爽约记录（自动/手动；手机号按权限打码） |
+| GET | /api/merchant/customers?q= | 顾客、爽约次数、受限/黑名单（手机号按权限打码；未授权时数字搜索只匹配打码后可见的前 3 / 后 4 位或完整号码） |
+| POST | /api/merchant/customers/blacklist `{customerId 或 phone,on,reason}` | 拉黑/移出（需「拉黑/解除拉黑顾客」；店员界面按顾客 ID 操作，不需要知道完整号码） |
+| POST | /api/merchant/customers/:key/clear | 解除爽约限制与频率锁（key = 顾客 ID 或手机号；需「拉黑/解除拉黑顾客」） |
 | GET/PUT | /api/merchant/settings | 读取（含 schema 与范围）/ 部分更新（服务端校验；防占号规则需「修改防占号规则」，评价与反馈开关仅店主） |
 | POST | /api/merchant/settings/reset | 恢复默认（店主） |
 | GET/POST/PUT/DELETE | /api/merchant/services[/:id] | 服务管理、单项定金、`images:[图片ID…]`（≤3 张，第一张为封面；需「管理服务与图片」；删除=下架） |
@@ -159,15 +159,17 @@ awaiting_payment / pending / confirmed ─顾客或商家取消→ cancelled（�
 错误统一为 `{ "error": { "code": "LIMIT_OPEN", "message": "每人最多同时保留 2 个未完成的预约（门店设置）…" } }`，消息里引用当前设置值。店员无权限时返回 `403 NO_PERMISSION`（`perm` 字段为缺少的权限项），仅店主可做的操作返回 `403 OWNER_ONLY`。
 
 ## 店员权限
-店主在「商家后台 → 店员权限」按店员账号逐项授权，可以有多个店员账号（可新增、停用、重置密码）。**所有授权默认关闭**。
+店主在「商家后台 → 店员权限」按店员账号逐项授权，可以有多个店员账号（可新增、停用、重置密码）。**除「处理预约」默认开启外，其余授权默认关闭**（升级时迁移 `005_booking_perms.sql` 会给已有店员显式打开「处理预约」；每项开关都显式保存，店主关掉后保持关闭）。
 
 | 权限项（key） | 允许的操作 |
 |---|---|
+| 处理预约 `booking.handle`（默认开） | 确认/拒绝、到店、完成、取消、标记爽约。关闭后店员仍可**只读**查看看板、预约列表、待确认/超时/爽约记录和顾客列表，操作按钮隐藏，接口返回 403 |
+| 拉黑/解除拉黑顾客 `customer.blacklist` | 拉黑、移出黑名单、手动加入黑名单、解除爽约限制 |
 | 回复评价 `review.reply` | 回复顾客评价、修改回复 |
 | 隐藏/显示评价 `review.hide` | 隐藏评价或恢复公开 |
 | 审核评价 `review.approve` | 「先审后发」时通过待审核评价 |
 | 处理意见反馈 `feedback.handle` | 修改反馈处理状态、填写内部备注 |
-| 查看顾客完整手机号 `customer.phone` | 意见反馈里顾客要求回访时显示完整号码（未授权时打码） |
+| 查看顾客完整手机号 `customer.phone` | 预约列表、预约操作返回、爽约记录、顾客列表、意见反馈回访中显示完整号码。未授权时**服务端**一律打码为 138****5678（不是只在界面隐藏）；店主始终看到完整号码 |
 | 管理服务与图片 `service.manage` | 新增/编辑/下架服务、上传服务图片、单项定金 |
 | 修改防占号规则 `rules.edit` | 数量限制、取消、爽约、定金等规则（不含评价与反馈开关、恢复默认、门店信息） |
 
@@ -175,8 +177,8 @@ awaiting_payment / pending / confirmed ─顾客或商家取消→ cancelled（�
 - **服务端逐请求校验**：每次请求都从数据库重新读取账号和授权，所以店主改完**立即生效**（同一个已登录的店员令牌，下一次请求就按新权限判断）。无权限返回 `403 NO_PERMISSION` 和中文提示（如「店主未授权你「回复评价」，如需操作请联系店主在「店员权限」中开通」）。
 - **界面同步**：店员页面只显示有权限的按钮；店主修改授权后通过商家 SSE 推送 `perms` 事件，店员页面自动刷新并提示「店主已更新你的权限，立即生效」。
 - **操作留痕**：评价回复显示回复人和时间；隐藏/审核记录操作人（`moderated_by/at`），反馈记录最后处理人（`handled_by/at`）；操作日志可按「评价与反馈」「店员操作」筛选，显示店员姓名、账号和时间。
-- 店员一直可以处理预约、查看顾客和拉黑/解除（与之前相同）；预约和顾客列表里的手机号仍完整显示，「查看顾客完整手机号」只控制意见反馈回访号码。
-- 截图：`nail-render-shots/30_owner_staff_permissions.png`（店主授权页）、`31_staff_reply_allowed.png`（获授权后店员回复）、`32_staff_denied.png` / `32b_staff_denied_settings.png`（未授权）、`33_owner_audit_staff_ops.png`（操作日志）。
+- 手机号：评价管理里的手机号对所有人打码（与之前相同）；意见反馈只有顾客选择「电话回访 / 短信回复」时才对店主/已授权店员显示完整号码。预约卡片没有拨号按钮；门店「联系商家」拨号是顾客端拨打门店电话，与此无关。商家 SSE 事件只含类型和 ID，不含手机号。
+- 截图：`nail-render-shots/30_owner_staff_permissions.png`（店主授权页）、`31_staff_reply_allowed.png`（获授权后店员回复）、`32_staff_denied.png` / `32b_staff_denied_settings.png`（未授权）、`33_owner_audit_staff_ops.png`（操作日志）、`34_staff_masked_phones.png` / `34b_staff_masked_customers.png`（店员看到打码号码）、`35_staff_bookings_readonly.png`（关闭「处理预约」后只读）、`35b_owner_booking_perm_off.png`。
 
 ## 服务图片
 - 商家在「服务管理 → 新增/编辑服务」里选图（手机上可拍照或从相册选），最多 3 张，第一张为封面，可「设为封面 / 更换 / 删除」。
