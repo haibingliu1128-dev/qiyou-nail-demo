@@ -2,7 +2,7 @@
 // 顾客端 API（公开 + 顾客令牌）
 const { AppError } = require('../lib/util');
 module.exports = async function (app) {
-  const { auth, booking, cfg, sms, repo, bus } = app.ctx;
+  const { auth, booking, cfg, sms, repo, bus, reviews } = app.ctx;
   const bearer = req => (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || null;
   const customer = req => { const c = auth.resolve(bearer(req), 'customer'); if (!c) throw new AppError(401, 'NEED_LOGIN', '请先验证手机号'); return c; };
 
@@ -19,7 +19,7 @@ module.exports = async function (app) {
     return reply.type(im.mime).header('Content-Length', im.bytes).send(im.data);
   });
   // 顾客端实时更新（SSE）：只推送「服务/设置有变化」这类公开信号，不含任何顾客数据
-  const PUBLIC_EVENTS = new Set(['service', 'settings', 'reset', 'shop']);
+  const PUBLIC_EVENTS = new Set(['service', 'settings', 'reset', 'shop', 'review']);
   app.get('/stream', (req, reply) => {
     reply.hijack();
     const res = reply.raw;
@@ -30,7 +30,20 @@ module.exports = async function (app) {
     bus.on('change', send);
     req.raw.on('close', () => { clearInterval(hb); bus.off('change', send); });
   });
-  app.get('/shop', async () => ({ ...booking.publicInfo(), demo: { showSmsCode: cfg.devShowSmsCode, mockPay: cfg.payProvider === 'mock', notice: cfg.demoNotice || '' } }));
+  app.get('/shop', async () => {
+    const info = booking.publicInfo(), x = reviews.shopExtras();
+    info.services = info.services.map(s => ({ ...s, rating: x.serviceRatings[s.id] || null }));
+    if (!x.features.contact) info.shop = { ...info.shop, phone: null };   // 关闭「联系商家」时不下发电话
+    return { ...info, features: x.features, rating: x.rating, demo: { showSmsCode: cfg.devShowSmsCode, mockPay: cfg.payProvider === 'mock', notice: cfg.demoNotice || '' } };
+  });
+  // 评价（公开展示）
+  app.get('/reviews', async req => reviews.publicList(req.query.serviceId, req.query.offset, req.query.limit));
+  app.post('/reviews', async (req, reply) => { const r = reviews.createReview(customer(req), req.body || {}, req.ip); reply.code(201); return r; });
+  app.put('/reviews/:id', async req => reviews.editReview(customer(req), req.params.id, req.body || {}, req.ip));
+  app.post('/me/images', async (req, reply) => { const r = reviews.uploadPhoto(customer(req), req.body, req.ip); reply.code(201); return r; });
+  // 意见反馈（仅商家可见）
+  app.post('/feedback', async (req, reply) => { const r = reviews.createFeedback(customer(req), req.body || {}, req.ip); reply.code(201); return r; });
+  app.get('/me/feedback', async req => reviews.myFeedback(customer(req)));
   app.get('/availability', async req => booking.availability(req.query.serviceId, req.query.from, req.query.days ? +req.query.days : undefined));
 
   app.post('/auth/sms', async req => auth.sendCode(String((req.body || {}).phone || ''), req.ip));
@@ -39,7 +52,7 @@ module.exports = async function (app) {
   app.post('/auth/logout', async req => { auth.logout(bearer(req)); return { ok: true }; });
 
   app.get('/me', async req => booking.me(customer(req)));
-  app.get('/me/bookings', async req => booking.myBookings(customer(req)));
+  app.get('/me/bookings', async req => reviews.attachToBookings(booking.myBookings(customer(req))));
   app.get('/quote', async req => booking.quote(customer(req), req.query.serviceId));
   app.post('/bookings', async (req, reply) => { const r = await booking.create(customer(req), req.body || {}, { ip: req.ip }); reply.code(201); return r; });
   app.get('/bookings/:id/payment', async req => booking.paymentInfo(customer(req), req.params.id));

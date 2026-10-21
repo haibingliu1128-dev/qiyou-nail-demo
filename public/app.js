@@ -84,6 +84,21 @@ var AV=null; // 当前服务的可约时段 {serviceId, days:[{date,free,slots}]
 function loadShop(){return api('GET','/api/shop').then(function(r){C=r;return r})}
 function svcById(id){id=+id;return C.services.filter(function(s){return s.id===id})[0]}
 function loadAvail(sid){return api('GET','/api/availability?serviceId='+sid).then(function(r){AV=r;return r})}
+function F(){return C.features||{}}
+var RV={};  // 评价缓存：key = serviceId 或 'all'
+function loadReviews(sid,more){var k=sid||'all',cur=RV[k],off=more&&cur?cur.items.length:0;
+  return api('GET','/api/reviews?limit='+(more?10:(sid?3:10))+'&offset='+off+(sid?'&serviceId='+sid:'')).then(function(r){
+    if(more&&cur){cur.items=cur.items.concat(r.items);cur.hasMore=r.hasMore;cur.summary=r.summary}else RV[k]=r;return RV[k]})}
+function starsH(n,cls){var h='';for(var i=1;i<=5;i++)h+='<i class="'+(i<=Math.round(n||0)?'on':'')+'">★</i>';return '<span class="stars'+(cls?' '+cls:'')+'" aria-label="'+(n||0)+' 星">'+h+'</span>'}
+function dShort(ms){var d=new Date(ms);return (d.getMonth()+1)+'月'+d.getDate()+'日'}
+function rvTags(tags,stat){return tags&&tags.length?'<div class="rvtags">'+tags.map(function(t){return stat?'<span class="'+(t.neg?'neg':'')+'">'+esc(t.tag)+' '+t.n+'</span>':'<span>'+esc(t)+'</span>'}).join('')+'</div>':''}
+function photoRow(urls){return urls&&urls.length?'<div class="rvph">'+urls.map(function(u){return '<img src="'+esc(u)+'" alt="评价图片" loading="lazy" decoding="async" data-a="viewImg" data-v="'+esc(u)+'">'}).join('')+'</div>':''}
+function reviewItem(r,showSvc){return '<div class="rvitem"><div class="rvh"><span class="who">'+esc(r.who)+'</span>'+starsH(r.stars)+(r.seed?'<span class="demo-tag">示例</span>':'')+'<span class="when">'+dShort(r.createdAt)+'</span></div>'+
+  (showSvc?'<div class="rvsvc">'+esc(r.serviceName)+'</div>':'')+rvTags(r.tags)+(r.text?'<div class="rvtext">'+esc(r.text)+'</div>':'')+photoRow(r.photos)+
+  (r.reply?'<div class="rvreply"><b>商家回复：</b>'+esc(r.reply.text)+'</div>':'')+'</div>'}
+function rvSummary(sm,big){if(!sm||!sm.count)return '<div class="rvempty">暂无评价</div>';
+  return '<div class="rvsum'+(big?' big':'')+'"><div class="avg"><b>'+sm.avg.toFixed(1)+'</b>'+starsH(sm.avg)+'</div><div class="meta">共 '+sm.count+' 条评价<br>好评率 '+sm.good+'%</div>'+
+  (big?'<div class="dist">'+[5,4,3,2,1].map(function(n){var c=sm.dist[n-1];return '<div><span>'+n+'星</span><i><em style="width:'+Math.round(c/sm.count*100)+'%"></em></i><small>'+c+'</small></div>'}).join('')+'</div>':'')+'</div>'+rvTags(sm.tags.slice(0,big?10:5),true)}
 function loadMine(){if(!ME.token)return Promise.resolve();return Promise.all([api('GET','/api/me',null,'c'),api('GET','/api/me/bookings',null,'c')]).then(function(r){ME.info=r[0];ME.bookings=r[1]})}
 
 /* ---------- 状态 & 渲染 ---------- */
@@ -92,10 +107,13 @@ var app=document.getElementById('app');
 function go(view,push){if(push!==false)S.stack.push(S.view);S.view=view;render(true);onEnter(view)}
 function back(){S.view=S.stack.pop()||S.tab;render(true);onEnter(S.view)}
 function switchTab(t){S.tab=t;S.stack=[];S.view=t;render(true);onEnter(t)}
-function isMView(){return ['merchant','abm','abset','svcedit','audit'].indexOf(S.view)>=0}
+function isMView(){return ['merchant','abm','abset','svcedit','audit','mreviews','mfeedback'].indexOf(S.view)>=0}
 /* 进入页面时拉取数据 */
 function onEnter(v){
-  if(v==='time'&&S.sel.serviceId){loadAvail(S.sel.serviceId).then(function(){if(S.view==='time')render(false)},fail)}
+  if(v==='time'&&S.sel.serviceId){loadAvail(S.sel.serviceId).then(function(){if(S.view==='time')render(false)},fail);
+    if(F().reviewPublic)loadReviews(S.sel.serviceId).then(function(){if(S.view==='time')render(false)},function(){})}
+  if(v==='reviews')loadReviews(S.rvSid).then(function(){if(S.view==='reviews')render(false)},fail);
+  if(v==='feedback'&&ME.token)api('GET','/api/me/feedback',null,'c').then(function(r){S.myfb=r;if(S.view==='feedback')render(false)},function(){});
   if(v==='mine'){loadMine().then(function(){if(S.view==='mine')render(false)},fail)}
   if(v==='confirm'||v==='time')loadShop().then(function(){if(S.view===v)render(false)},function(){});
   if(v==='confirm'){S.quote=null;if(ME.token&&ME.phone===S.sel.phone)api('GET','/api/quote?serviceId='+S.sel.serviceId,null,'c').then(function(q){S.quote=q;if(S.view==='confirm')render(false)},function(){})}
@@ -124,21 +142,23 @@ V.home=function(){
   '<div class="txt"><h1>'+esc(sh.name)+'</h1><p>QIYOU NAIL STUDIO · 一人一甲 · 慢工细作</p><div class="tagrow"><span>独立工作室</span><span>一客一消毒</span><span>可按图定制</span></div></div></div>'+
   '<div class="card shopcard"><div class="shoprow"><div class="ic">'+I.clock+'</div><div class="b"><b>营业时间 '+sh.open+' - '+sh.close+'</b><span>可在线预约未来 '+sh.bookDays+' 天</span></div></div>'+
   '<div class="shoprow"><div class="ic">'+I.pin+'</div><div class="b"><b>'+esc(sh.address)+'</b><span>地址为占位内容，可替换为门店真实地址</span></div></div>'+
-  '<div class="shoprow"><div class="ic">'+I.phone+'</div><div class="b"><b>'+esc(sh.phone)+'</b><span>示例电话 · 到店前可电话确认</span></div></div></div>'+
+  (sh.phone?'<div class="shoprow"><div class="ic">'+I.phone+'</div><div class="b"><b>'+esc(sh.phone)+'</b><span>示例电话 · 到店前可电话确认</span></div></div>':'')+
+  (F().contact?'<button class="btn ghost contactbtn" data-a="callShop">'+I.phone.replace('<svg','<svg width="16" height="16"')+'联系商家</button>':'')+'</div>'+
+  (F().reviewPublic&&C.rating&&C.rating.count?'<div class="pad" style="padding-bottom:0"><div class="card rvcard" data-a="goReviews" data-v=""><div class="sec-t" style="margin:0 0 6px">顾客评价<small>全部 '+C.rating.count+' 条 ›</small></div>'+rvSummary(C.rating)+'</div></div>':'')+
   '<div class="pad" style="padding-top:0"><div class="card quick"><button data-a="startBook"><span class="qi" style="background:#FDECEF;color:#E86F8A">'+I.cal+'</span>立即预约</button><button data-a="tab" data-v="mine"><span class="qi" style="background:#EAF3FD;color:#5AA2E8">'+I.list+'</span>我的预约</button><button data-a="toast" data-v="作品集页面可按需定制"><span class="qi" style="background:#F0EEFE;color:#8C7CF0">'+ART.gem('#8C7CF0')+'</span>作品集</button><button data-a="toMerchant"><span class="qi" style="background:#FEF1E8;color:#F29C6B">'+I.shop+'</span>商家后台</button></div>'+
   '<div class="sec-t">热门服务<small data-a="startBook" style="cursor:pointer">全部 '+C.services.length+' 项 ›</small></div>'+
   C.services.slice(0,4).map(function(s){return svcCard(s,'quickBook')}).join('')+
   '<div class="demo-strip">演示作品：店铺名称、地址、预约数据均为虚构示例；短信验证码与定金支付均为模拟。</div></div>'}};
 function svcCard(s,mode){var on=S.sel.serviceId===s.id&&mode==='pick';
   return '<button class="svc'+(on?' on':'')+'" data-a="'+mode+'" data-v="'+s.id+'">'+(s.hot?'<span class="hot">人气</span>':'')+thumb(s)+
-  '<div class="info"><b>'+esc(s.name)+'</b><div class="d">'+esc(s.desc||'')+'</div><div class="meta"><span class="price">'+s.price+'</span><span class="chip">'+I.clock.replace('<svg','<svg width="11" height="11"')+durText(s.duration)+'</span>'+(s.deposit?'<span class="chip" style="color:#C9761A">定金¥'+s.deposit+'</span>':'')+'</div></div>'+
+  '<div class="info"><b>'+esc(s.name)+'</b><div class="d">'+esc(s.desc||'')+'</div><div class="meta"><span class="price">'+s.price+'</span><span class="chip">'+I.clock.replace('<svg','<svg width="11" height="11"')+durText(s.duration)+'</span>'+(s.rating&&s.rating.count?'<span class="chip rate">★'+s.rating.avg.toFixed(1)+'</span>':'')+(s.deposit?'<span class="chip" style="color:#C9761A">定金¥'+s.deposit+'</span>':'')+'</div></div>'+
   (mode==='pick'?'<span class="pick">'+(on?I.check:'')+'</span>':'<span class="go">预约</span>')+'</button>'}
 V.book=function(){var s=S.sel.serviceId&&svcById(S.sel.serviceId);
   return {nav:nav('选择服务',{back:S.stack.length>0}),tab:S.stack.length===0,body:steps(1)+'<div class="pad"><div class="sec-t">全部服务<small>共 '+C.services.length+' 项</small></div>'+
     (C.services.length?C.services.map(function(x){return svcCard(x,'pick')}).join(''):'<div class="empty">商家暂未上架服务</div>')+'</div>',
     foot:'<div class="foot"><div class="sum">'+(s?'已选：'+esc(s.name)+'<br><b class="price">'+s.price+'</b>':'请选择一项服务')+'</div><button class="btn" data-a="toTime"'+(s?'':' disabled')+'>下一步</button></div>'}};
 V.time=function(){var s=svcById(S.sel.serviceId);if(!s)return V.book();
-  var html=steps(2)+'<div class="pad">'+gallery(s)+'<div class="card" style="display:flex;align-items:center;gap:10px;padding:10px 12px"><div class="se" style="flex:1">'+thumb(s)+'<div class="b"><b>'+esc(s.name)+'</b><span class="muted" style="font-size:12px">时长约 '+durText(s.duration)+'</span></div></div><span class="price">'+s.price+'</span></div>';
+  var html=steps(2)+'<div class="pad">'+gallery(s)+'<div class="card" style="display:flex;align-items:center;gap:10px;padding:10px 12px"><div class="se" style="flex:1">'+thumb(s)+'<div class="b"><b>'+esc(s.name)+'</b><span class="muted" style="font-size:12px">时长约 '+durText(s.duration)+(s.rating&&s.rating.count?' · <span class="rate">★'+s.rating.avg.toFixed(1)+'</span>（'+s.rating.count+' 条评价）':'')+'</span></div></div><span class="price">'+s.price+'</span></div>';
   if(!AV||AV.serviceId!==s.id)return {nav:nav('选择时间',{back:true}),body:html+loading()+'</div>'};
   var days=AV.days;if(!S.sel.date||!days.some(function(d){return d.date===S.sel.date})){var f=days.filter(function(d){return d.free})[0]||days[0];S.sel.date=f&&f.date}
   var cur=days.filter(function(d){return d.date===S.sel.date})[0];
@@ -148,9 +168,56 @@ V.time=function(){var s=svcById(S.sel.serviceId);if(!s)return V.book();
   html+='<div class="sec-t" style="margin-top:14px">选择时间<small>'+dateLabel(S.sel.date)+'</small></div>';
   [['上午',0,720],['下午',720,1080],['晚上',1080,1440]].forEach(function(g){var it=cur.slots.filter(function(x){var m=+x.time.slice(0,2)*60+ +x.time.slice(3);return m>=g[1]&&m<g[2]});if(!it.length)return;
     html+='<div class="period">'+g[0]+'</div><div class="slots">'+it.map(function(x){return '<button class="slot'+(S.sel.time===x.time?' on':'')+'" data-a="pickTime" data-v="'+x.time+'"'+(x.ok?'':' disabled')+'>'+x.time+(x.ok?'':'<small>'+x.why+'</small>')+'</button>'}).join('')+'</div>'});
-  html+=rulesBox()+'<div class="legend"><span><i style="background:#fff"></i>可预约</span><span><i style="background:var(--brand-l);border-color:var(--brand)"></i>已选择</span><span><i style="background:var(--gray-l)"></i>不可约</span></div></div>';
+  html+=rulesBox()+'<div class="legend"><span><i style="background:#fff"></i>可预约</span><span><i style="background:var(--brand-l);border-color:var(--brand)"></i>已选择</span><span><i style="background:var(--gray-l)"></i>不可约</span></div>'+svcReviews(s)+'</div>';
   var end=S.sel.time?endOf(S.sel.time,s.duration):'';
   return {nav:nav('选择时间',{back:true}),body:html,foot:'<div class="foot"><div class="sum">'+(S.sel.time?dateLabel(S.sel.date)+'<br><b style="color:var(--ink)">'+S.sel.time+' - '+end+'</b>':'请选择到店时间')+'</div><button class="btn" data-a="toInfo"'+(S.sel.time?'':' disabled')+'>下一步</button></div>'}};
+function svcReviews(s){if(!F().reviewPublic)return '';var r=RV[s.id];
+  return '<div class="card rvbox" id="svc-reviews"><div class="sec-t" style="margin:0 0 8px">顾客评价'+(r&&r.summary.count?'<small data-a="goReviews" data-v="'+s.id+'" style="cursor:pointer">全部 '+r.summary.count+' 条 ›</small>':'')+'</div>'+
+  (!r?'<div class="rvempty">加载中…</div>':rvSummary(r.summary)+r.items.slice(0,3).map(function(x){return reviewItem(x)}).join(''))+'</div>'}
+V.reviews=function(){var sid=S.rvSid,r=RV[sid||'all'],s=sid&&svcById(sid);
+  return {nav:nav(s?esc(s.name)+' · 评价':'顾客评价',{back:true}),body:'<div class="pad">'+(!r?loading():'<div class="card">'+rvSummary(r.summary,true)+'</div>'+
+    (r.items.length?'<div class="card" style="padding:4px 14px">'+r.items.map(function(x){return reviewItem(x,!sid)}).join('')+'</div>':'')+
+    (r.hasMore?'<button class="btn ghost" style="width:100%" data-a="rvMore">加载更多</button>':'<div class="rvend">'+(r.items.length?'没有更多了':'')+'</div>'))+'</div>'}};
+var FB_CONTACT=[['none','无需回复'],['sms','短信回复'],['phone','电话回访']];
+V.feedback=function(){var f=S.fb,Fe=F();
+  if(!Fe.feedback)return {nav:nav('意见反馈',{back:true}),body:'<div class="pad"><div class="empty">门店暂未开启意见反馈</div></div>'};
+  return {nav:nav('意见反馈',{back:true}),body:'<div class="pad"><div class="abnote" style="margin-top:0">建议或投诉只有门店能看到，我们会尽快处理。'+(Fe.contact?'急事请直接 <span data-a="callShop" style="text-decoration:underline;cursor:pointer">联系商家</span>。':'')+'</div>'+
+  '<div class="card"><div class="muted" style="font-size:12px">反馈类型</div><div class="chips" style="margin-top:8px">'+Fe.feedbackTypes.map(function(t){return '<button class="chipb'+(f.type===t?' on':'')+'" data-a="fbType" data-v="'+esc(t)+'">'+esc(t)+'</button>'}).join('')+'</div></div>'+
+  '<div class="card"><textarea id="fb-text" class="ta" maxlength="500" placeholder="请描述你的建议或遇到的问题（2–500 字）">'+esc(f.text)+'</textarea><div class="cnt"><span id="fb-cnt">'+[...f.text].length+'</span>/500</div>'+
+  (Fe.feedbackPhotos?'<div class="muted" style="font-size:12px;margin-top:6px">图片（选填，最多 3 张）</div><div class="imgs" id="fb-imgs"></div>':'')+'</div>'+
+  '<div class="card"><div class="muted" style="font-size:12px">是否需要回复</div><div class="chips" style="margin-top:8px">'+FB_CONTACT.map(function(c){return '<button class="chipb'+(f.contact===c[0]?' on':'')+'" data-a="fbContact" data-v="'+c[0]+'">'+c[1]+'</button>'}).join('')+'</div>'+
+  (f.contact!=='none'?'<div class="muted" style="font-size:12px;margin-top:6px">门店将通过你验证的手机号'+(ME.phone?'（'+maskPhone(ME.phone)+'）':'')+'联系你</div>':'')+'</div>'+
+  '<button class="btn" style="width:100%" data-a="fbSubmit"'+(S.busy?' disabled':'')+'>提交反馈</button>'+
+  (S.myfb&&S.myfb.length?'<div class="sec-t" style="margin-top:18px">我的反馈</div>'+S.myfb.map(function(x){return '<div class="card fbmine"><div class="h"><span class="abtag dep">'+esc(x.type)+'</span><span class="fbst '+x.status+'">'+x.statusText+'</span><small>'+dShort(x.createdAt)+'</small></div><div class="t">'+esc(x.text)+'</div>'+photoRow(x.photos)+'</div>'}).join(''):'')+'</div>'}};
+function fbSubmit(){var f=S.fb;f.text=(document.getElementById('fb-text')||{value:f.text}).value;
+  if(!f.type){toast('请选择反馈类型');return}if([...f.text.trim()].length<2){toast('请填写反馈内容');return}if(S.imgctx&&S.imgctx.uploading){toast('图片还在上传，请稍候');return}
+  if(!ME.token){dialogPhone(fbSubmit);return}
+  S.busy=true;render(false);
+  api('POST','/api/feedback',{type:f.type,text:f.text.trim(),photos:f.photos.map(function(x){return x.id}),contact:f.contact},'c').then(function(){S.busy=false;S.fb=newFb();toast('已提交，感谢你的反馈');render(false);onEnter('feedback');bindFbImgs()},
+    function(e){S.busy=false;render(false);bindFbImgs();fail(e)})}
+function newFb(){return {type:'',text:'',photos:[],contact:'none'}}
+S.fb=newFb();
+function bindFbImgs(){if(S.view==='feedback'&&F().feedbackPhotos){S.imgctx={items:S.fb.photos,max:F().feedbackPhotos,el:'fb-imgs',cover:false,uploading:(S.imgctx&&S.imgctx.el==='fb-imgs'?S.imgctx.uploading:0),who:'c'};refreshImgs()}}
+/* 评价弹层：星级 + 标签（4–5 星显示好评标签，1–3 星显示差评标签）+ 文字 + 图片 */
+function rvSheet(b){var r=b.review;S.rv={bookingId:b.id,id:r&&r.id,stars:r?r.stars:5,tags:r?r.tags.slice():[],text:r?r.text:'',photos:r?r.photos.slice():[]};
+  sheet(r?'修改评价':'评价本次服务','<div class="rvform"><div class="muted" style="font-size:13px">'+esc(b.serviceName)+' · '+dateLabel(b.date)+' '+b.time+'</div><div id="rv-body"></div>'+
+  '<textarea id="rv-text" class="ta" maxlength="300" placeholder="说说这次的体验吧（选填，最多 300 字）">'+esc(S.rv.text)+'</textarea><div class="cnt"><span id="rv-cnt">'+[...S.rv.text].length+'</span>/300</div>'+
+  (F().reviewPhotos?'<div class="muted" style="font-size:12px;margin-top:4px">晒图（选填，最多 '+F().reviewPhotos+' 张）</div><div class="imgs" id="rv-imgs"></div>':'')+
+  '<button class="btn" style="width:100%;margin-top:12px" data-a="rvSubmit">'+(r?'保存修改':'提交评价')+'</button>'+(r?'<div class="muted" style="font-size:11px;text-align:center;margin-top:6px">'+dShort(r.editableUntil)+'前可修改</div>':'')+'</div>');
+  S.imgctx={items:S.rv.photos,max:F().reviewPhotos||0,el:'rv-imgs',cover:false,uploading:0,who:'c'};refreshImgs();rvBody();bindInputs()}
+var STAR_T=['','非常差','不满意','一般','满意','非常满意'];
+function rvBody(){var el=document.getElementById('rv-body');if(!el)return;var x=S.rv,Fe=F(),list=x.stars>=4?Fe.tagsPos:Fe.tagsNeg.concat(Fe.tagsPos);
+  x.tags=x.tags.filter(function(t){return list.indexOf(t)>=0});
+  el.innerHTML='<div class="rvstars">'+[1,2,3,4,5].map(function(n){return '<button data-a="rvStar" data-v="'+n+'" class="'+(n<=x.stars?'on':'')+'" aria-label="'+n+' 星">★</button>'}).join('')+'<span>'+STAR_T[x.stars]+'</span></div>'+
+  '<div class="chips">'+list.map(function(t){return '<button class="chipb'+(x.tags.indexOf(t)>=0?' on':'')+(Fe.tagsNeg.indexOf(t)>=0?' neg':'')+'" data-a="rvTag" data-v="'+esc(t)+'">'+esc(t)+'</button>'}).join('')+'</div>'}
+function rvSubmit(){var x=S.rv;x.text=document.getElementById('rv-text').value;if(S.imgctx&&S.imgctx.uploading){toast('图片还在上传，请稍候');return}
+  var body={bookingId:x.bookingId,stars:x.stars,tags:x.tags,text:x.text.trim(),photos:x.photos.map(function(p){return p.id})};
+  api(x.id?'PUT':'POST','/api/reviews'+(x.id?'/'+x.id:''),body,'c').then(function(r){closeSheet();toast(r.status==='pending'?'已提交，门店审核后公开展示':x.id?'评价已修改':'感谢你的评价！');onEnter('mine')},fail)}
+function contactSheet(){if(!F().contact||!C.shop.phone){toast('门店暂未开放线上联系');return}var sh=C.shop;
+  sheet('联系商家','<div class="card" style="padding:2px 14px"><div class="shoprow"><div class="ic">'+I.phone+'</div><div class="b"><b>'+esc(sh.phone)+'</b><span>营业时间 '+sh.open+' - '+sh.close+'</span></div></div>'+
+  '<div class="shoprow"><div class="ic">'+I.pin+'</div><div class="b"><b>'+esc(sh.address)+'</b><span>'+esc(sh.name)+'</span></div></div></div>'+
+  '<a class="btn" style="width:100%;display:flex;justify-content:center;align-items:center;text-decoration:none" id="tel-link" href="tel:'+esc(String(sh.phone).replace(/[^0-9+]/g,''))+'">拨打电话</a>'+
+  (F().feedback?'<button class="btn ghost" style="width:100%;margin-top:8px" data-a="goFeedback">意见反馈</button>':''))}
 function endOf(t,dur){var m=+t.slice(0,2)*60+ +t.slice(3)+dur;return pad(Math.floor(m/60))+':'+pad(m%60)}
 V.info=function(){var e=S.errs;
   return {nav:nav('填写信息',{back:true}),body:steps(3)+'<div class="pad"><div class="card" style="padding:2px 14px">'+
@@ -191,7 +258,10 @@ function bookingInner(b,showOps,merchant){
   (showOps?ops(b,merchant):'')}
 function ops(b,merchant){var h='';
   if(!merchant){if(b.status==='awaiting_payment')h='<button class="btn sm gray" data-a="uCancel" data-v="'+b.id+'">取消</button><button class="btn sm" data-a="payAgain" data-v="'+b.id+'">去支付 ¥'+b.deposit+'</button>';
-    else if(OPEN_ST.indexOf(b.status)>=0&&b.status!=='arrived')h='<button class="btn sm gray" data-a="callShop">联系门店</button><button class="btn sm ghost" data-a="uCancel" data-v="'+b.id+'">取消预约</button>'}
+    else if(OPEN_ST.indexOf(b.status)>=0&&b.status!=='arrived')h=(F().contact?'<button class="btn sm gray" data-a="callShop">联系门店</button>':'')+'<button class="btn sm ghost" data-a="uCancel" data-v="'+b.id+'">取消预约</button>';
+    else if(b.status==='done'){if(b.review)h='<span class="myrv">我的评价 '+starsH(b.review.stars)+(b.review.status==='pending'?' <small>审核中</small>':'')+'</span>'+(b.review.canEdit?'<button class="btn sm ghost" data-a="rvOpen" data-v="'+b.id+'">修改评价</button>':'');
+      else if(b.canReview&&F().review)h='<button class="btn sm" data-a="rvOpen" data-v="'+b.id+'">去评价</button>'}
+    if(!merchant&&b.review&&b.review.reply)h+='<div class="rvreply" style="flex-basis:100%;margin-top:6px"><b>商家回复：</b>'+esc(b.review.reply.text)+'</div>'}
   else{var past=b.startAt<=Date.now();
     if(b.status==='pending')h='<button class="abb r" data-a="mOp" data-v="reject|'+b.id+'">拒绝</button><button class="abb p" data-a="mOp" data-v="accept|'+b.id+'">确认预约</button>';
     else if(b.status==='awaiting_payment')h='<button class="btn sm gray" data-a="mOp" data-v="cancel|'+b.id+'">取消</button>';
@@ -200,7 +270,8 @@ function ops(b,merchant){var h='';
   return h?'<div class="ops">'+h+'</div>':''}
 V.mine=function(){
   if(!ME.token)return {nav:nav('我的'),tab:true,body:'<div class="me"><div class="avatar">柚</div><div style="flex:1"><b style="font-size:17px">未登录</b><div class="muted" style="font-size:12px">验证手机号后查看你的预约</div></div><button class="fab-merchant" data-a="toMerchant">'+I.lock.replace('<svg','<svg width="14" height="14"')+'商家</button></div>'+
-    '<div class="pad"><button class="btn" style="width:100%" data-a="login">验证手机号登录</button>'+emptyBox('登录后可查看和取消预约',true)+'</div>'};
+    '<div class="pad"><button class="btn" style="width:100%" data-a="login">验证手机号登录</button>'+emptyBox('登录后可查看和取消预约',true)+
+    (F().feedback||F().contact?'<div class="card" style="padding:2px 14px;margin-top:4px">'+(F().feedback?'<button class="cell" data-a="goFeedback"><span class="ic">'+I.chat+'</span><span class="t">意见反馈</span><span class="arrow">'+I.right+'</span></button>':'')+(F().contact?'<button class="cell" data-a="callShop"><span class="ic">'+I.phone+'</span><span class="t">联系商家</span><span class="arrow">'+I.right+'</span></button>':'')+'</div>':'')+'</div>'};
   var bs=ME.bookings,inf=ME.info;
   var segs=[['open','待服务',function(b){return OPEN_ST.indexOf(b.status)>=0}],['done','已完成',function(b){return b.status==='done'}],['closed','已取消/失效',function(b){return ['cancelled','rejected','expired','no_show'].indexOf(b.status)>=0}]];
   var cur=segs.filter(function(x){return x[0]===S.mineSeg})[0];
@@ -211,7 +282,7 @@ V.mine=function(){
   return {nav:nav('我的'),tab:true,body:'<div class="me"><div class="avatar">'+esc((inf&&inf.name||'柚').slice(0,1))+'</div><div style="flex:1"><b style="font-size:17px">'+esc(inf&&inf.name||'栖柚会员')+'</b><div class="muted" style="font-size:12px">'+maskPhone(ME.phone)+' · <span data-a="logout" style="text-decoration:underline;cursor:pointer">退出</span></div></div><button class="fab-merchant" data-a="toMerchant">'+I.lock.replace('<svg','<svg width="14" height="14"')+'商家</button></div>'+
   '<div class="seg">'+segs.map(function(s){var n=bs?bs.filter(s[2]).length:0;return '<button class="'+(S.mineSeg===s[0]?'on':'')+'" data-a="mineSeg" data-v="'+s[0]+'">'+s[1]+(n?' '+n:'')+'</button>'}).join('')+'</div>'+
   '<div class="pad">'+warn+(!list?loading():list.length?list.map(function(b){return '<div class="card bk'+(stClass(b)==='cancelled'?' dim':'')+'">'+bookingInner(b,true)+'</div>'}).join(''):emptyBox(S.mineSeg==='open'?'暂无待服务的预约':'暂无记录',S.mineSeg==='open'))+
-  '<div class="card" style="padding:2px 14px;margin-top:4px"><button class="cell" data-a="startBook"><span class="ic">'+I.cal+'</span><span class="t">新建预约</span><span class="arrow">'+I.right+'</span></button><button class="cell" data-a="callShop"><span class="ic">'+I.phone+'</span><span class="t">联系门店</span><span class="arrow">'+I.right+'</span></button></div></div>'}};
+  '<div class="card" style="padding:2px 14px;margin-top:4px"><button class="cell" data-a="startBook"><span class="ic">'+I.cal+'</span><span class="t">新建预约</span><span class="arrow">'+I.right+'</span></button>'+(F().feedback?'<button class="cell" data-a="goFeedback"><span class="ic">'+I.chat+'</span><span class="t">意见反馈</span><span class="arrow">'+I.right+'</span></button>':'')+(F().contact?'<button class="cell" data-a="callShop"><span class="ic">'+I.phone+'</span><span class="t">联系商家</span><span class="arrow">'+I.right+'</span></button>':'')+'</div></div>'}};
 function emptyBox(t,cta){return '<div class="empty"><svg viewBox="0 0 96 96" width="96" height="96"><rect x="18" y="22" width="60" height="56" rx="10" fill="#FDECEF"/><rect x="18" y="22" width="60" height="14" rx="7" fill="#F6A8B6"/><rect x="30" y="14" width="6" height="16" rx="3" fill="#E86F8A"/><rect x="60" y="14" width="6" height="16" rx="3" fill="#E86F8A"/><circle cx="48" cy="57" r="11" fill="#fff"/></svg><p>'+t+'</p>'+(cta?'<button class="btn sm" data-a="startBook">去预约</button>':'')+'</div>'}
 
 /* ---------- 顾客：验证手机号 / 支付 ---------- */
@@ -269,18 +340,31 @@ function mLoad(v){if(!M.token)return;var p;
   else if(v==='abset')p=api('GET','/api/merchant/settings',null,'m').then(function(r){M.settings=r});
   else if(v==='svcedit')p=loadShop();
   else if(v==='audit')p=api('GET','/api/merchant/audit',null,'m').then(function(r){M.audit=r});
+  else if(v==='mreviews')p=api('GET','/api/merchant/reviews?filter='+S.rvF,null,'m').then(function(r){M.rv=r});
+  else if(v==='mfeedback')p=api('GET','/api/merchant/feedback?status='+S.fbF,null,'m').then(function(r){M.fb=r});
   if(p)p.then(function(){if(S.view===v)render(false)},fail);
   mStream()}
 function mStream(){if(M.es||!M.token||!window.EventSource)return;
   M.es=new EventSource('/api/merchant/stream?token='+encodeURIComponent(M.token));
   var t=null;M.es.addEventListener('change',function(ev){var d={};try{d=JSON.parse(ev.data)}catch(e){}
     if(d.type==='booking.create'&&isMView())toast('有新的预约');
+    if(d.type==='review'&&d.low&&isMView())lowAlert();
+    if(d.type==='feedback'&&d.isNew&&isMView())toast('收到新的意见反馈');
     clearTimeout(t);t=setTimeout(function(){if(isMView())mLoad(S.view)},300)});
   M.es.onerror=function(){if(!M.token){M.es.close();M.es=null}}}
+function lowAlert(){var el=document.createElement('div');el.className='mask center abalert';
+  el.innerHTML='<div class="dlg" role="alertdialog"><div class="c"><b>收到低分评价</b><p>有顾客给出了 '+(M.dash&&M.dash.inbox?M.dash.inbox.lowStar:3)+' 星及以下的评价，建议尽快查看并联系顾客跟进。</p></div><div class="a"><button data-d="0">稍后</button><button data-d="1" style="color:#E5484D;font-weight:600">立即查看</button></div></div>';
+  el.addEventListener('click',function(e){var d=e.target.getAttribute('data-d');if(e.target===el||d==='0')el.remove();else if(d==='1'){el.remove();S.rvF='low';go('mreviews')}});app.appendChild(el)}
 function mStop(){if(M.es){M.es.close();M.es=null}}
 /* 顾客端实时更新：商家改服务/图片/设置后，顾客页面自动刷新数据（公开事件，不含顾客信息） */
 var CES=null;function cStream(){if(CES||!window.EventSource)return;CES=new EventSource('/api/stream');var t=null;
-  CES.addEventListener('change',function(){clearTimeout(t);t=setTimeout(function(){loadShop().then(function(){if(!isMView()&&['home','book','time','confirm','info'].indexOf(S.view)>=0&&!app.querySelector('.mask'))render(false)},function(){})},250)})}
+  CES.addEventListener('change',function(ev){var d={};try{d=JSON.parse(ev.data)}catch(e){}clearTimeout(t);t=setTimeout(function(){
+    var busy=function(){var a=document.activeElement;return app.querySelector('.mask')||(a&&/INPUT|TEXTAREA|SELECT/.test(a.tagName))};
+    loadShop().then(function(){var v=S.view;if(isMView())return;
+      var p=Promise.resolve();
+      if(F().reviewPublic&&(v==='time'||v==='reviews')){RV={};p=loadReviews(v==='time'?S.sel.serviceId:S.rvSid)}
+      if(v==='mine'&&ME.token)p=loadMine();
+      return p.then(function(){if(['home','book','time','confirm','info','reviews','mine','feedback'].indexOf(v)>=0&&S.view===v&&!busy()){render(false);bindFbImgs()}})},function(){})},250)})}
 setInterval(function(){if(isMView()&&M.token)mLoad(S.view);else if(S.view==='time'&&S.sel.serviceId)onEnter('time');else if(S.view==='mine'&&ME.token)onEnter('mine')},30000);
 var isOwner=function(){return M.user&&M.user.role==='owner'};
 V.mlogin=function(){return {nav:nav('商家登录',{back:S.stack.length>0}),body:'<div class="login"><div class="logo"><svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M4 9l1.5-5h13L20 9M4 9v11h16V9M4 9c0 1.7 1.3 3 3 3s3-1.3 3-3c0 1.7 1.3 3 3 3s3-1.3 3-3c0 1.7 1.3 3 2 3"/><path d="M10 20v-5h4v5"/></svg></div><h2>'+esc(C.shop?C.shop.name:'')+' · 商家后台</h2><div class="sub">管理预约、防占号规则与顾客</div>'+
@@ -291,8 +375,11 @@ V.merchant=function(){var d=M.dash,L=M.list;if(!d||!L)return {nav:nav('商家后
   var mx=Math.max.apply(null,d.week.map(function(x){return x.amount}).concat([1])),rev=d.week.reduce(function(a,x){return a+x.amount},0);
   var body='<div class="mhead"><div class="r"><div><b>'+esc(C.shop.name)+'</b><br><small>'+dateLabel(today())+' · '+esc(M.user?M.user.name+'（'+(isOwner()?'店主':'员工')+'）':'')+'</small></div><button class="exit" data-a="mLogout">退出</button></div></div>'+
   '<div class="card stats"><div class="stat"><b>'+d.today+'</b><span>今日预约</span></div><div class="stat"><b>'+d.upcoming+'</b><span>待服务</span></div><div class="stat money"><b><span style="font-size:13px">¥</span>'+rev.toLocaleString()+'</b><span>本周营业额估算</span></div></div>'+
+  (d.inbox&&d.inbox.reviews.lowNew?'<div class="pad" style="padding-bottom:0"><button class="lowbar" data-a="goMReviews" data-v="low">⚠ 有 '+d.inbox.reviews.lowNew+' 条新的低分评价（≤'+d.inbox.lowStar+'星），请及时查看并联系顾客 ›</button></div>':'')+
   '<div class="pad" style="padding-top:0"><div class="mgrid">'+(isOwner()?'<button data-a="goSvcEdit"><span class="qi" style="background:#FDECEF;color:#E86F8A">'+I.edit+'</span><div><b>服务管理</b><span>'+C.services.length+' 项在售</span></div></button>':'')+
   '<button class="abentry" data-a="abGo"><span class="qi" style="background:#E7F7EE;color:#1E9E5A"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5" stroke-linecap="round"/></svg></span><div><b>防占号</b><span>'+(d.pending?d.pending+' 个待确认':'规则 · 爽约 · 黑名单')+'</span></div>'+(d.pending?'<em>'+d.pending+'</em>':'')+'</button>'+
+  (d.inbox?'<button class="abentry" data-a="goMReviews" data-v="all"><span class="qi" style="background:#FFF4D6;color:#C9761A">'+I.star+'</span><div><b>评价管理</b><span>'+(d.inbox.reviews.unreplied?d.inbox.reviews.unreplied+' 条待回复':'共 '+d.inbox.reviews.total+' 条')+'</span></div>'+(d.inbox.reviews.lowNew?'<em>'+d.inbox.reviews.lowNew+'</em>':'')+'</button>'+
+    '<button class="abentry" data-a="goMFeedback"><span class="qi" style="background:#F0EEFE;color:#8C7CF0">'+I.chat+'</span><div><b>意见反馈</b><span>'+((d.inbox.feedback.open||0)?d.inbox.feedback.open+' 条待处理':'暂无待处理')+'</span></div>'+(d.inbox.feedback.unseen?'<em>'+d.inbox.feedback.unseen+'</em>':'')+'</button>':'')+
   (isOwner()?'<button data-a="goAudit"><span class="qi" style="background:#EAF3FD;color:#5AA2E8">'+I.list+'</span><div><b>操作日志</b><span>谁在何时做了什么</span></div></button><button data-a="mReset"><span class="qi" style="background:#FEF1E8;color:#F29C6B">'+I.reset+'</span><div><b>重置演示</b><span>恢复示例数据</span></div></button>':'')+'</div>'+
   '<div class="card"><div class="sec-t" style="margin:0 0 4px;font-size:14px">本周营业额（估算）<small>按已确认/完成预约参考价合计</small></div><div class="bar7">'+d.week.map(function(x){return '<div class="'+(x.date===today()?'today':'')+'"><em>'+(x.amount||'')+'</em><i style="height:'+Math.round(x.amount/mx*60)+'px"></i><small>'+(x.date===today()?'今':wk(x.date))+'</small></div>'}).join('')+'</div></div>'+
   '<div class="mtabs">'+[['today','今日预约'],['upcoming','待服务'],['pending','待确认'],['all','全部记录']].map(function(x){return '<button class="'+(S.mTab===x[0]?'on':'')+'" data-a="mTab" data-v="'+x[0]+'">'+x[1]+'</button>'}).join('')+'</div>'+
@@ -331,8 +418,12 @@ V.abset=function(){if(!M.settings)return {nav:nav('防占号设置',{back:true})
       if(r.key==='rate')rows=stp('rate.m')+stp('rate.n')+stp('rate.lock');
       else if(r.key==='noshow')rows=stp('noshow.n')+stp('noshow.days','统计周期（近 N 天）')+'<div class="abrow"><span>处理方式</span><div class="abseg">'+[['block','禁止线上预约'],['deposit','必须付定金']].map(function(s){return '<button class="'+(Cv.noshow.act===s[0]?'on':'')+'" data-a="abAct" data-v="'+s[0]+'">'+s[1]+'</button>'}).join('')+'</div></div>'+stp('noshow.release','自动解除（最后一次爽约后）');
       else if(r.key==='deposit')rows=M.settings.services.map(function(s){return '<div class="abrow"><span style="display:flex;align-items:center;gap:8px"><button class="abtog'+(s.depositOn?' on':'')+'" style="transform:scale(.8);margin-left:-4px" data-a="abSvcTog" data-v="'+s.id+'" role="switch" aria-checked="'+s.depositOn+'" aria-label="'+esc(s.name)+' 定金"></button>'+esc(s.name)+'</span>'+(s.depositOn?stp('svc.'+s.id).replace(/^<div class="abrow"><span>[^<]*<\/span>/,'').replace(/<\/div>$/,''):'<small style="color:var(--ink3)">不收定金</small>')+'</div>'}).join('')+stp('deposit.force');
+      else if(r.key==='review'||r.key==='feedback')rows=(r.fields||[]).map(function(f){return stp(r.key+'.'+f)}).join('')+(r.bools||[]).map(function(b){var p=r.key+'.'+b,v=sv(p);return '<div class="abrow"><span>'+(b==='photos'?'允许上传图片':b)+'</span><button class="abtog'+(v?' on':'')+'" style="transform:scale(.8)" data-a="abBool" data-v="'+p+'" role="switch" aria-checked="'+v+'" aria-label="'+esc(r.title)+' 允许上传图片"></button></div>'}).join('')+
+        (r.enum==='moderate'?'<div class="abrow"><span>先审后发</span><div class="abseg">'+[['off','关闭'],['low','仅低分'],['all','全部']].map(function(x){return '<button class="'+(Cv.review.moderate===x[0]?'on':'')+'" data-a="abEnum" data-v="review.moderate|'+x[0]+'">'+x[1]+'</button>'}).join('')+'</div></div>':'')+
+        (r.lists||[]).map(function(l){var p=r.key+'.'+l,L=M.settings.lists[p];return '<div class="ablist"><div class="t">'+esc(L[3])+'<small>'+L[0]+'–'+L[1]+' 项，每项 ≤'+L[2]+' 字</small></div><div class="chips">'+sv(p).map(function(t,i){return '<span class="chipb on">'+esc(t)+'<button data-a="abListDel" data-v="'+p+'|'+i+'" aria-label="删除 '+esc(t)+'">×</button></span>'}).join('')+'</div><div class="abadd"><input data-list="'+p+'" maxlength="'+L[2]+'" placeholder="新增'+esc(L[3])+'"><button class="abb k" data-a="abListAdd" data-v="'+p+'">添加</button></div></div>'}).join('');
       else if(r.fields)rows=r.fields.map(function(f){return stp(r.key+'.'+f)}).join('');
       h+='<div class="abrule'+(on?'':' off')+'" id="abr-'+r.key+'"><div class="hd"><b>'+esc(r.title)+'</b><button class="abtog'+(on?' on':'')+'" data-a="abTog" data-v="'+r.key+'" role="switch" aria-checked="'+on+'" aria-label="'+esc(r.title)+'"></button></div><div class="ds">'+esc(r.desc)+'</div>'+(rows?'<div class="rows">'+rows+'</div>':'')+'</div>'})});
+  h+='<div class="sec-t" style="margin:14px 2px 8px;font-size:14px">门店联系方式</div><div class="abrule"><div class="ds">用于「联系商家」按钮（拨打电话）和地址展示</div><div class="abadd"><input id="shop-phone" value="'+esc(M.settings.shop.phone)+'" placeholder="门店电话" inputmode="tel"></div><div class="abadd"><input id="shop-addr" value="'+esc(M.settings.shop.address)+'" maxlength="60" placeholder="门店地址"><button class="abb k" data-a="shopSave">保存</button></div></div>';
   h+='<button class="btn ghost" style="width:100%;margin:6px 0 24px" data-a="abReset">恢复默认</button></div>';
   return {nav:nav('防占号设置',{back:true}),body:h}};
 function saveRule(patch,msg){if(!isOwner()){toast('员工账号不能修改设置');return}
@@ -341,12 +432,33 @@ function saveSvcDep(id,f,msg){if(!isOwner()){toast('员工账号不能修改设�
   api('PUT','/api/merchant/services/'+id,f,'m').then(function(){return api('GET','/api/merchant/settings',null,'m')}).then(function(r){M.settings=r;render(false);toast(msg);loadShop()},function(e){fail(e);render(false)})}
 function setPath(path,val){if(path.indexOf('svc.')===0){var s=svcDep(path);saveSvcDep(s.id,{deposit:val},'已保存：'+s.name+' 定金 ¥'+val);return}
   var p=path.split('.'),o={};o[p[0]]={};o[p[0]][p[1]]=val;var r=rg(path);saveRule(o,'已保存：'+val+' '+r[3])}
+S.rvF='all';S.fbF='open';
+var RV_STATUS={pending:'<span class="abtag pend">待审核</span>',hidden:'<span class="abtag ns">已隐藏</span>'};
+V.mreviews=function(){var R=M.rv;if(!R)return {nav:nav('评价管理',{back:true}),body:loading()};var c=R.counts,ro=!isOwner();
+  var tabs=[['all','全部',c.total],['unreplied','待回复',c.unreplied],['low','差评≤'+R.lowStar+'星',c.low],['pending','待审核',c.pending],['hidden','已隐藏',c.hidden]];
+  return {nav:nav('评价管理',{back:true}),body:'<div class="pad"><div class="card">'+rvSummary(R.summary)+'<div class="muted" style="font-size:11px;margin-top:6px">商家统计含隐藏/待审核评价；公开页只统计已公开的评价。</div></div>'+
+  '<div class="mtabs" style="padding:0 0 10px">'+tabs.map(function(t){return '<button class="'+(S.rvF===t[0]?'on':'')+'" data-a="rvF" data-v="'+t[0]+'">'+t[1]+(t[2]?' '+t[2]:'')+'</button>'}).join('')+'</div>'+
+  (R.items.length?R.items.map(function(r){return '<div class="card mrv'+(r.low?' low':'')+'"><div class="rvh">'+starsH(r.stars)+(r.low?'<span class="abtag blk">低分</span>':'')+(RV_STATUS[r.status]||'')+(r.seed?'<span class="demo-tag">示例</span>':'')+'<span class="when">'+dShort(r.createdAt)+'</span></div>'+
+    '<div class="rvsvc">'+esc(r.serviceName)+' · '+md(r.date)+' '+r.time+' · 订单 '+esc(r.bookingCode)+' · '+esc(r.phone)+'</div>'+rvTags(r.tags)+(r.text?'<div class="rvtext">'+esc(r.text)+'</div>':'<div class="rvtext muted">（未填写文字）</div>')+photoRow(r.photos)+
+    (r.reply?'<div class="rvreply"><b>已回复：</b>'+esc(r.reply.text)+'</div>':'')+
+    (ro?'':'<div class="ops">'+(r.status==='pending'?'<button class="btn sm okb" data-a="rvAct" data-v="approve|'+r.id+'">通过审核</button>':'')+
+      '<button class="btn sm gray" data-a="rvAct" data-v="'+(r.status==='hidden'?'unhide':'hide')+'|'+r.id+'">'+(r.status==='hidden'?'取消隐藏':'隐藏')+'</button>'+
+      (R.features.reply?'<button class="btn sm" data-a="rvReply" data-v="'+r.id+'">'+(r.reply?'修改回复':'回复')+'</button>':'')+'</div>')+'</div>'}).join(''):emptyBox('暂无评价',false))+
+  (ro?'<div class="small" style="text-align:center;color:var(--ink3);font-size:12px">员工账号仅可查看</div>':'')+'</div>'}};
+function rpSheet(r){S.rpId=r.id;sheet(r.reply?'修改回复':'回复评价','<div class="rvtext" style="margin-bottom:8px">'+starsH(r.stars)+' '+esc(r.text||'（未填写文字）')+'</div><textarea id="rp-text" class="ta" maxlength="300" placeholder="感谢顾客，或说明改进措施（最多 300 字，公开可见）">'+esc(r.reply?r.reply.text:'')+'</textarea><div class="cnt"><span id="rp-cnt">'+(r.reply?[...r.reply.text].length:0)+'</span>/300</div><button class="btn" style="width:100%;margin-top:10px" data-a="rpSave">发布回复</button>');bindInputs()}
+var FB_T=[['open','待处理'],['doing','处理中'],['done','已处理'],['','全部']];
+V.mfeedback=function(){var R=M.fb;if(!R)return {nav:nav('意见反馈',{back:true}),body:loading()};var ro=!isOwner();
+  return {nav:nav('意见反馈',{back:true}),body:'<div class="pad"><div class="mtabs" style="padding:0 0 10px">'+FB_T.map(function(t){var n=t[0]==='open'?R.counts.open:t[0]==='doing'?R.counts.doing:0;return '<button class="'+(S.fbF===t[0]?'on':'')+'" data-a="fbF" data-v="'+t[0]+'">'+t[1]+(n?' '+n:'')+'</button>'}).join('')+'</div>'+
+  (R.items.length?R.items.map(function(f){return '<div class="card mfb"><div class="h"><span class="abtag dep">'+esc(f.type)+'</span><span class="fbst '+f.status+'">'+f.statusText+'</span>'+(f.seed?'<span class="demo-tag">示例</span>':'')+'<small>'+dShort(f.createdAt)+' '+hm(f.createdAt)+'</small></div>'+
+    '<div class="t">'+esc(f.text)+'</div>'+photoRow(f.photos)+'<div class="rvsvc">'+esc(f.name||'顾客')+' · '+esc(f.phone)+' · '+esc(f.contactText)+'</div>'+
+    (f.note?'<div class="rvreply"><b>内部备注：</b>'+esc(f.note)+'</div>':'')+
+    (ro?'':'<div class="ops">'+[['open','待处理'],['doing','处理中'],['done','已处理']].filter(function(x){return x[0]!==f.status}).map(function(x){return '<button class="btn sm '+(x[0]==='done'?'okb':'gray')+'" data-a="fbSt" data-v="'+x[0]+'|'+f.id+'">标为'+x[1]+'</button>'}).join('')+'<button class="btn sm ghost" data-a="fbNote" data-v="'+f.id+'">备注</button></div>')+'</div>'}).join(''):emptyBox('暂无反馈',false))+'</div>'}};
 V.audit=function(){var A=M.audit;return {nav:nav('操作日志',{back:true}),body:'<div class="pad">'+(!A?loading():A.length?A.map(function(a){var d=new Date(a.at);
   return '<div class="abitem"><div class="t"><b style="font-size:13px">'+esc(a.action)+'</b><span class="muted" style="font-size:11px">'+(d.getMonth()+1)+'/'+d.getDate()+' '+hm(a.at)+'</span></div><div class="s">'+esc(a.actor_type)+(a.actor_name?' · '+esc(a.actor_name):'')+(a.target?' · '+esc(a.target):'')+(a.detail?' · '+esc(JSON.stringify(a.detail)).slice(0,120):'')+'</div></div>'}).join(''):'<div class="empty">暂无记录</div>')+'</div>'}};
 V.svcedit=function(){return {nav:nav('服务管理',{back:true}),body:'<div class="pad"><div class="sec-t">在售服务<small>修改后顾客端实时生效</small></div>'+
   C.services.map(function(s){return '<div class="card se">'+thumb(s)+'<div class="b"><b>'+esc(s.name)+'</b><span class="price">'+s.price+'</span> <span class="chip">'+durText(s.duration)+'</span></div><div class="ops"><button class="icbtn" data-a="svcEdit" data-v="'+s.id+'" aria-label="编辑">'+I.edit+'</button><button class="icbtn del" data-a="svcDel" data-v="'+s.id+'" aria-label="删除">'+I.trash+'</button></div></div>'}).join('')+
   '<button class="add" data-a="svcEdit">'+I.plus+'新增服务</button></div>'}};
-function svcSheet(s){var isNew=!s;s=s||{name:'',desc:'',price:'',duration:60,icon:'polish',color:0,images:[]};S.draft={id:s.id,icon:s.icon,color:s.color,images:(s.images||[]).slice(),uploading:0};
+function svcSheet(s){var isNew=!s;s=s||{name:'',desc:'',price:'',duration:60,icon:'polish',color:0,images:[]};S.draft={id:s.id,icon:s.icon,color:s.color,images:(s.images||[]).slice()};S.imgctx={items:S.draft.images,max:3,el:'pk-imgs',cover:true,uploading:0,who:'m'};
   var durs=[30,45,60,90,120,150,180];
   sheet(isNew?'新增服务':'编辑服务','<div class="card" style="padding:2px 14px"><div class="field"><label>名称</label><input id="s-name" maxlength="14" placeholder="如：法式美甲" value="'+esc(s.name)+'"></div>'+
   '<div class="field"><label>价格(元)</label><input id="s-price" type="number" inputmode="numeric" min="0" placeholder="0" value="'+esc(s.price)+'"></div>'+
@@ -357,13 +469,13 @@ function svcSheet(s){var isNew=!s;s=s||{name:'',desc:'',price:'',duration:60,ico
   '<div style="display:flex;gap:10px;margin-top:6px"><button class="btn gray" style="flex:1" data-a="closeSheet">取消</button><button class="btn" style="flex:1" data-a="svcSave">保存</button></div>');refreshPicks();refreshImgs()}
 var IMG_MAX=3,IMG_RAW_MAX=10*1024*1024,IMG_SIDE=1080;
 function fileInput(v){return '<input type="file" accept="image/*" data-img="'+v+'" aria-label="选择图片">'}
-function refreshImgs(){var el=document.getElementById('pk-imgs');if(!el)return;var d=S.draft;
-  el.innerHTML=d.images.map(function(im,i){return '<div class="itile"><img src="'+esc(im.url)+'" alt="服务图片'+(i+1)+'">'+
+function refreshImgs(){var d=S.imgctx;if(!d)return;var el=document.getElementById(d.el);if(!el)return;
+  el.innerHTML=d.items.map(function(im,i){return '<div class="itile"><img src="'+esc(im.url)+'" alt="服务图片'+(i+1)+'">'+
     '<button class="ix" data-a="imgDel" data-v="'+i+'" aria-label="删除图片">'+I.close.replace('width="22" height="22"','width="14" height="14"')+'</button>'+
-    (i===0?'<span class="icov">封面</span>':'<button class="icov2" data-a="imgCover" data-v="'+i+'">设为封面</button>')+
+    (!d.cover?'':i===0?'<span class="icov">封面</span>':'<button class="icov2" data-a="imgCover" data-v="'+i+'">设为封面</button>')+
     '<label class="irep">更换'+fileInput(i)+'</label></div>'}).join('')+
   (d.uploading?'<div class="itile up"><i class="spin"></i><span>压缩上传中…</span></div>':'')+
-  (d.images.length+d.uploading<IMG_MAX?'<label class="iadd">'+I.plus+'<span>添加图片</span>'+fileInput('new')+'</label>':'')}
+  (d.items.length+d.uploading<d.max?'<label class="iadd">'+I.plus+'<span>添加图片</span>'+fileInput('new')+'</label>':'')}
 /* 前端压缩：最长边 ≤1080px，JPEG 0.8（超过 1.9MB 再降到 0.6）；原图 >10MB 直接提示 */
 function loadImg(file){
   if(window.createImageBitmap)return createImageBitmap(file,{imageOrientation:'from-image'}).catch(function(){return viaImg(file)});
@@ -376,16 +488,16 @@ function compressImg(file){return loadImg(file).then(function(im){var w=im.width
   return tb(.8).then(function(b){return b&&b.size>1.9*1024*1024?tb(.6):b}).then(function(b){if(!b)throw {message:'图片处理失败，请重试'};return b})})}
 function uploadImg(blob,url){return fetch(url||'/api/merchant/images',{method:'POST',headers:{'Content-Type':blob.type||'image/jpeg',Authorization:'Bearer '+(url?ME.token:M.token)},body:blob}).then(function(r){
   return r.json().catch(function(){return {}}).then(function(j){if(r.ok)return j;throw (j&&j.error)||{message:'上传失败（'+r.status+'）'}})},function(){throw {message:'网络连接失败，图片未上传'}})}
-function pickImage(file,slot){var d=S.draft;if(!file||!d)return;
+function pickImage(file,slot){var d=S.imgctx;if(!file||!d)return;
   if(file.type&&!/^image\//.test(file.type)){toast('请选择图片文件');return}
   if(file.size>IMG_RAW_MAX){alertBox('图片太大','这张图片超过 10MB，请换一张，或先在相册里编辑/裁剪后再上传。');return}
   d.uploading++;refreshImgs();
-  compressImg(file).then(function(b){return uploadImg(b)}).then(function(r){var im={id:r.id,url:r.url};
-    if(slot==='new')d.images.push(im);else d.images[+slot]=im;toast('图片已上传，保存后生效')},fail).then(function(){d.uploading--;refreshImgs()})}
+  compressImg(file).then(function(b){return uploadImg(b,d.who==='c'?'/api/me/images':null)}).then(function(r){var im={id:r.id,url:r.url};
+    if(slot==='new')d.items.push(im);else d.items[+slot]=im;toast(d.cover?'图片已上传，保存后生效':'图片已添加')},fail).then(function(){d.uploading--;refreshImgs()})}
 function refreshPicks(){var c=S.draft.color;
   document.getElementById('pk-icon').innerHTML=Object.keys(ART).map(function(k){return '<button class="'+(k===S.draft.icon?'on':'')+'" data-a="pkIcon" data-v="'+k+'" style="background:'+PALETTE[c][1]+'">'+ART[k](PALETTE[c][0])+'</button>'}).join('');
   document.getElementById('pk-color').innerHTML=PALETTE.map(function(p,i){return '<button class="'+(i===c?'on':'')+'" data-a="pkColor" data-v="'+i+'" style="background:'+p[0]+';width:30px;height:30px;border-radius:50%"></button>'}).join('')}
-function saveSvc(){if(S.draft.uploading){toast('图片还在上传，请稍候');return}var b={images:S.draft.images.map(function(x){return x.id}),name:document.getElementById('s-name').value.trim(),price:document.getElementById('s-price').value.trim(),duration:+document.getElementById('s-dur').value,desc:document.getElementById('s-desc').value.trim(),icon:S.draft.icon,color:S.draft.color};
+function saveSvc(){if(S.imgctx&&S.imgctx.uploading){toast('图片还在上传，请稍候');return}var b={images:S.draft.images.map(function(x){return x.id}),name:document.getElementById('s-name').value.trim(),price:document.getElementById('s-price').value.trim(),duration:+document.getElementById('s-dur').value,desc:document.getElementById('s-desc').value.trim(),icon:S.draft.icon,color:S.draft.color};
   if(!b.name){toast('请填写服务名称');return}if(b.price===''||isNaN(+b.price)){toast('请填写正确的价格');return}b.price=+b.price;
   api(S.draft.id?'PUT':'POST','/api/merchant/services'+(S.draft.id?'/'+S.draft.id:''),b,'m').then(function(){closeSheet();toast(S.draft.id?'已保存':'已新增服务');return loadShop()}).then(function(){render(false)},fail)}
 function mDoLogin(){var u=document.getElementById('m-user').value.trim(),p=document.getElementById('m-pass').value;S.muser=u;
@@ -409,11 +521,12 @@ function render(resetScroll){
   if(r.nav&&r.nav.indexOf('trans')>0){m.addEventListener('scroll',function(){var n=app.querySelector('.nav');var y=m.scrollTop;n.style.background='rgba(255,255,255,'+Math.min(y/150,1)+')';n.style.color=y>110?'#1F2329':'#fff'})}
   if(!resetScroll){m.scrollTop=st;m.firstChild.style.animation='none'}
   var gl=document.getElementById('gal'),gn=document.getElementById('galn');if(gl&&gn)gl.addEventListener('scroll',function(){gn.textContent=(Math.round(gl.scrollLeft/gl.clientWidth)+1)+'/'+gl.children.length},{passive:true});
-  bindInputs()}
+  bindInputs();if(S.view==='feedback')bindFbImgs()}
 function bindInputs(){var n=document.getElementById('f-name'),p=document.getElementById('f-phone'),no=document.getElementById('f-note');
   if(n)n.addEventListener('input',function(){S.sel.name=n.value});
   if(p)p.addEventListener('input',function(){var v=p.value.replace(/\D/g,'').slice(0,11);if(v!==p.value)p.value=v;S.sel.phone=v});
   if(no)no.addEventListener('input',function(){S.sel.note=no.value});
+  [['fb-text','fb-cnt'],['rv-text','rv-cnt'],['rp-text','rp-cnt']].forEach(function(p){var t=document.getElementById(p[0]);if(t&&!t._b){t._b=1;t.addEventListener('input',function(){var c=document.getElementById(p[1]);if(c)c.textContent=[...t.value].length;if(p[0]==='fb-text')S.fb.text=t.value})}});
   var mp=document.getElementById('m-pass');if(mp)mp.addEventListener('keydown',function(e){if(e.key==='Enter')mDoLogin()})}
 function validate(){var e={},nm=S.sel.name.trim(),ph=S.sel.phone;
   if(!nm)e.name='请填写称呼';if(!/^1[3-9]\d{9}$/.test(ph))e.phone=ph.length!==11?'请输入 11 位手机号':'手机号格式不正确';S.errs=e;return !e.name&&!e.phone}
@@ -453,7 +566,18 @@ app.addEventListener('click',function(e){
   case 'uCancel': var b=findB(v);if(b&&b.canCancel===false){alertBox('暂不能线上取消',b.cancelBlock);break}
     dialog('取消预约','确定要取消这次预约吗？取消后时段会释放给其他顾客。'+(b&&b.depositStatus==='paid'?'定金 ¥'+b.deposit+' 将原路退回。':''),'确定取消',function(){
       api('POST','/api/bookings/'+v+'/cancel',null,'c').then(function(r){toast('已取消预约'+(r.refunded?'，定金已退回':''));onEnter('mine')},function(e){if(ERR_T[e.code])alertBox(ERR_T[e.code],e.message);else fail(e)})});break;
-  case 'callShop': toast('门店电话 '+(C.shop?C.shop.phone:''));break;
+  case 'callShop': contactSheet();break;
+  case 'goReviews': S.rvSid=v?+v:null;go('reviews');break;
+  case 'rvMore': loadReviews(S.rvSid,true).then(function(){render(false)},fail);break;
+  case 'viewImg': sheet('','<img src="'+esc(v)+'" alt="图片" style="width:100%;border-radius:12px;display:block" data-a="closeSheet">','imgview');break;
+  case 'goFeedback': closeSheet();go('feedback');setTimeout(bindFbImgs,0);break;
+  case 'fbType': S.fb.text=(document.getElementById('fb-text')||{value:S.fb.text}).value;S.fb.type=v;render(false);bindFbImgs();break;
+  case 'fbContact': S.fb.text=(document.getElementById('fb-text')||{value:S.fb.text}).value;S.fb.contact=v;render(false);bindFbImgs();break;
+  case 'fbSubmit': fbSubmit();break;
+  case 'rvOpen': var rb=findB(v);if(rb)rvSheet(rb);break;
+  case 'rvStar': S.rv.stars=+v;rvBody();break;
+  case 'rvTag': var ti=S.rv.tags.indexOf(v);if(ti>=0)S.rv.tags.splice(ti,1);else S.rv.tags.push(v);rvBody();break;
+  case 'rvSubmit': rvSubmit();break;
   case 'toMerchant': if(M.token)go('merchant');else go('mlogin');break;
   case 'mLogin': mDoLogin();break;
   case 'mLogout': api('POST','/api/merchant/logout',null,'m').catch(function(){});M.token=null;M.user=null;sessionStorage.removeItem(MT);mStop();switchTab('mine');toast('已退出商家后台');break;
@@ -480,8 +604,27 @@ app.addEventListener('click',function(e){
   case 'pkIcon': S.draft.icon=v;refreshPicks();break;
   case 'pkColor': S.draft.color=+v;refreshPicks();break;
   case 'svcSave': saveSvc();break;
-  case 'imgDel': S.draft.images.splice(+v,1);refreshImgs();break;
-  case 'imgCover': var mv=S.draft.images.splice(+v,1)[0];S.draft.images.unshift(mv);refreshImgs();toast('已设为封面，保存后生效');break;
+  case 'goMReviews': S.rvF=v||'all';M.rv=null;go('mreviews');break;
+  case 'goMFeedback': S.fbF='open';M.fb=null;go('mfeedback');break;
+  case 'rvF': S.rvF=v;mLoad('mreviews');break;
+  case 'fbF': S.fbF=v;mLoad('mfeedback');break;
+  case 'rvAct': var ra=v.split('|');api('POST','/api/merchant/reviews/'+ra[1]+'/'+ra[0],null,'m').then(function(){toast({hide:'已隐藏，不再公开展示',unhide:'已恢复公开',approve:'已通过，公开展示'}[ra[0]]);mLoad('mreviews')},fail);break;
+  case 'rvReply': var rr=M.rv.items.filter(function(x){return x.id===+v})[0];if(rr)rpSheet(rr);break;
+  case 'rpSave': var rt=document.getElementById('rp-text').value.trim();if(!rt){toast('请填写回复内容');break}
+    api('PUT','/api/merchant/reviews/'+S.rpId+'/reply',{text:rt},'m').then(function(){closeSheet();toast('回复已发布');mLoad('mreviews')},fail);break;
+  case 'fbSt': var fs=v.split('|');api('PUT','/api/merchant/feedback/'+fs[1],{status:fs[0]},'m').then(function(){toast('已更新状态');mLoad('mfeedback')},fail);break;
+  case 'fbNote': var fn=M.fb.items.filter(function(x){return x.id===+v})[0];S.fbNoteId=+v;
+    sheet('内部备注','<div class="muted" style="font-size:12px;margin-bottom:6px">仅商家可见，顾客看不到</div><textarea id="fbn-text" class="ta" maxlength="200" placeholder="处理记录，如：已电话联系，下次到店赠送护理">'+esc(fn?fn.note:'')+'</textarea><button class="btn" style="width:100%;margin-top:10px" data-a="fbNoteSave">保存备注</button>');break;
+  case 'fbNoteSave': api('PUT','/api/merchant/feedback/'+S.fbNoteId,{note:document.getElementById('fbn-text').value},'m').then(function(){closeSheet();toast('备注已保存');mLoad('mfeedback')},fail);break;
+  case 'abBool': var bp2=v.split('.'),bo={};bo[bp2[0]]={};bo[bp2[0]][bp2[1]]=!sv(v);saveRule(bo,(bo[bp2[0]][bp2[1]]?'已开启':'已关闭')+'，立即生效');break;
+  case 'abEnum': var ep=v.split('|'),ek=ep[0].split('.'),eo={};eo[ek[0]]={};eo[ek[0]][ek[1]]=ep[1];saveRule(eo);break;
+  case 'abListDel': var lp=v.split('|'),lk=lp[0].split('.'),la=sv(lp[0]).slice();la.splice(+lp[1],1);var lo={};lo[lk[0]]={};lo[lk[0]][lk[1]]=la;saveRule(lo,'已删除，立即生效');break;
+  case 'abListAdd': var li=app.querySelector('input[data-list="'+v+'"]'),lv=(li&&li.value||'').trim();if(!lv){toast('请输入内容');break}
+    var lk2=v.split('.'),lo2={};lo2[lk2[0]]={};lo2[lk2[0]][lk2[1]]=sv(v).concat([lv]);saveRule(lo2,'已添加「'+lv+'」');break;
+  case 'shopSave': if(!isOwner()){toast('员工账号不能修改设置');break}
+    api('PUT','/api/merchant/shop',{phone:document.getElementById('shop-phone').value.trim(),address:document.getElementById('shop-addr').value.trim()},'m').then(function(){toast('门店联系方式已保存');loadShop();mLoad('abset')},fail);break;
+  case 'imgDel': S.imgctx.items.splice(+v,1);refreshImgs();break;
+  case 'imgCover': var mv=S.imgctx.items.splice(+v,1)[0];S.imgctx.items.unshift(mv);refreshImgs();toast('已设为封面，保存后生效');break;
   case 'svcDel': var sv0=svcById(v);dialog('下架服务','确定下架「'+esc(sv0.name)+'」？已有预约不受影响。','下架',function(){api('DELETE','/api/merchant/services/'+v,null,'m').then(function(){toast('已下架');return loadShop()}).then(function(){render(false)},fail)});break;
   }
 });
@@ -489,9 +632,9 @@ app.addEventListener('change',function(e){var t=e.target,slot=t.getAttribute&&t.
   if(slot!=null&&slot!==''){var f=t.files&&t.files[0];t.value='';pickImage(f,slot);return}
   var p=t.getAttribute&&t.getAttribute('data-abin');if(!p)return;var r=rg(p),v=String(t.value).trim();
   if(!/^\d+$/.test(v)||+v<r[0]||+v>r[1]||(+v-r[0])%r[2]){toast('请输入 '+r[0]+'–'+r[1]+' 之间'+(r[2]>1?' '+r[2]+' 的倍数':'的整数'));render(false);return}setPath(p,+v)});
-function dialogPhone(){var el=sheet('验证手机号','<div class="card" style="padding:2px 14px"><div class="field"><label>手机号</label><input id="lg-phone" type="tel" inputmode="numeric" maxlength="11" placeholder="11 位手机号"></div></div><button class="btn" style="width:100%;margin-top:8px" data-a="lgNext">下一步</button>');
+function dialogPhone(after){var el=sheet('验证手机号','<div class="card" style="padding:2px 14px"><div class="field"><label>手机号</label><input id="lg-phone" type="tel" inputmode="numeric" maxlength="11" placeholder="11 位手机号"></div></div><button class="btn" style="width:100%;margin-top:8px" data-a="lgNext">下一步</button>');
   el.querySelector('[data-a=lgNext]').addEventListener('click',function(e){e.stopPropagation();var ph=document.getElementById('lg-phone').value.trim();if(!/^1[3-9]\d{9}$/.test(ph)){toast('请输入正确的 11 位手机号');return}
-    verifySheet(ph,function(){onEnter('mine');render(false)})})}
+    verifySheet(ph,after||function(){onEnter('mine');render(false)})})}
 
 /* ---------- 启动 ---------- */
 if(location.hash==='#merchant'){S.tab='mine';S.view=M.token?'merchant':'mlogin'}

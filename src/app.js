@@ -12,6 +12,7 @@ const { createAuthService } = require('./services/auth');
 const { createBookingService } = require('./services/booking');
 const { createMerchantService } = require('./services/merchant');
 const { createImageService, MAX_BYTES } = require('./services/images');
+const { createReviewService } = require('./services/reviews');
 const { seed } = require('./seed');
 const { AppError } = require('./lib/util');
 
@@ -28,6 +29,7 @@ async function build(over = {}) {
   ctx.auth = createAuthService(ctx);
   ctx.booking = createBookingService(ctx);
   ctx.merchant = createMerchantService(ctx, ctx.booking);
+  ctx.reviews = createReviewService(ctx);
   await seed(repo, ctx.auth, { images: ctx.images });
   app.decorate('ctx', ctx);
 

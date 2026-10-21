@@ -41,7 +41,47 @@ function createRepo(db) {
     imageMeta: ids => ids.length ? q(`SELECT id,mime,bytes,owner_type,owner_id FROM images WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids) : [],
     /** 删除超过 olderThan 毫秒、且没有被任何服务（或其它引用表）使用的上传图片 */
     purgeOrphanImages: olderThan => q(`DELETE FROM images WHERE seed=0 AND created_at < ? AND id NOT IN (SELECT j.value FROM services s, json_each(s.images) j)
-      ${R._extraImageRefs || ''}`).run(now() - olderThan).changes,
+      AND id NOT IN (SELECT j.value FROM reviews r, json_each(r.photos) j) AND id NOT IN (SELECT j.value FROM feedback f, json_each(f.photos) j)`).run(now() - olderThan).changes,
+
+    // ---- reviews（评价）----
+    insertReview: r => q(`INSERT INTO reviews (booking_id,customer_id,service_id,stars,tags,text,photos,status,seed,reply_text,reply_at,reply_by,alert_seen,created_at,updated_at)
+      VALUES (@booking_id,@customer_id,@service_id,@stars,@tags,@text,@photos,@status,@seed,@reply_text,@reply_at,@reply_by,@alert_seen,@t,@t)`)
+      .run({ seed: 0, reply_text: null, reply_at: null, reply_by: null, alert_seen: 0, ...r, t: r.created_at || now() }).lastInsertRowid,
+    updateReview: (id, f) => {
+      const keys = Object.keys(f); if (!keys.length) return;
+      q(`UPDATE reviews SET ${keys.map(k => `${k}=@${k}`).join(',')}, updated_at=@_t WHERE id=@_id`).run({ ...f, _t: now(), _id: id });
+    },
+    getReview: id => q(`SELECT r.*, c.phone, b.service_name, b.date, b.code, b.start_min FROM reviews r JOIN customers c ON c.id=r.customer_id JOIN bookings b ON b.id=r.booking_id WHERE r.id=?`).get(id),
+    reviewsByBookings: ids => ids.length ? q(`SELECT * FROM reviews WHERE booking_id IN (${ids.map(() => '?').join(',')})`).all(...ids) : [],
+    /** 公开列表：只含 status='public' */
+    listPublicReviews: ({ serviceId, limit, offset }) => q(`SELECT r.*, c.phone, b.service_name FROM reviews r JOIN customers c ON c.id=r.customer_id JOIN bookings b ON b.id=r.booking_id
+      WHERE r.status='public' AND (@sid IS NULL OR r.service_id=@sid) ORDER BY r.created_at DESC LIMIT @limit OFFSET @offset`).all({ sid: serviceId || null, limit: limit || 10, offset: offset || 0 }),
+    /** 统计原始数据（publicOnly=true 时排除隐藏/待审核） */
+    reviewRows: ({ serviceId, publicOnly }) => q(`SELECT service_id, stars, tags FROM reviews WHERE (@sid IS NULL OR service_id=@sid) ${publicOnly ? "AND status='public'" : ''}`).all({ sid: serviceId || null }),
+    listMerchantReviews: (filter, lowStar) => q(`SELECT r.*, c.phone, b.service_name, b.date, b.code, b.start_min FROM reviews r JOIN customers c ON c.id=r.customer_id JOIN bookings b ON b.id=r.booking_id
+      WHERE ${{ unreplied: "r.reply_text IS NULL AND r.status!='hidden'", low: 'r.stars<=@low', pending: "r.status='pending'", hidden: "r.status='hidden'" }[filter] || '1=1'}
+      ORDER BY r.created_at DESC LIMIT 200`).all({ low: lowStar }),
+    reviewCounts: lowStar => q(`SELECT COUNT(*) total,
+        SUM(CASE WHEN reply_text IS NULL AND status!='hidden' THEN 1 ELSE 0 END) unreplied,
+        SUM(CASE WHEN stars<=@low THEN 1 ELSE 0 END) low,
+        SUM(CASE WHEN stars<=@low AND alert_seen=0 THEN 1 ELSE 0 END) low_new,
+        SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending,
+        SUM(CASE WHEN status='hidden' THEN 1 ELSE 0 END) hidden, AVG(stars) avg FROM reviews`).get({ low: lowStar }),
+    markLowSeen: lowStar => q('UPDATE reviews SET alert_seen=1 WHERE stars<=? AND alert_seen=0').run(lowStar).changes,
+
+    // ---- feedback（意见反馈，仅商家可见）----
+    insertFeedback: f => q(`INSERT INTO feedback (customer_id,type,text,photos,contact,status,seed,created_at,updated_at) VALUES (@customer_id,@type,@text,@photos,@contact,'open',@seed,@t,@t)`)
+      .run({ seed: 0, ...f, t: f.created_at || now() }).lastInsertRowid,
+    getFeedback: id => q('SELECT f.*, c.phone, c.name AS cname FROM feedback f JOIN customers c ON c.id=f.customer_id WHERE f.id=?').get(id),
+    updateFeedback: (id, f) => {
+      const keys = Object.keys(f); if (!keys.length) return;
+      q(`UPDATE feedback SET ${keys.map(k => `${k}=@${k}`).join(',')}, updated_at=@_t WHERE id=@_id`).run({ ...f, _t: now(), _id: id });
+    },
+    listFeedback: status => q(`SELECT f.*, c.phone, c.name AS cname FROM feedback f JOIN customers c ON c.id=f.customer_id WHERE (@st IS NULL OR f.status=@st) ORDER BY f.created_at DESC LIMIT 200`).all({ st: status || null }),
+    listCustomerFeedback: cid => q('SELECT * FROM feedback WHERE customer_id=? ORDER BY created_at DESC LIMIT 50').all(cid),
+    feedbackCounts: () => q(`SELECT SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) open, SUM(CASE WHEN status='doing' THEN 1 ELSE 0 END) doing, SUM(CASE WHEN seen=0 THEN 1 ELSE 0 END) unseen, COUNT(*) total FROM feedback`).get(),
+    markFeedbackSeen: () => q('UPDATE feedback SET seen=1 WHERE seen=0').run().changes,
+    updateShopContact: (phone, address) => q('UPDATE shop SET phone=?, address=? WHERE id=1').run(phone, address),
 
     // ---- customers ----
     getCustomerByPhone: p => q('SELECT * FROM customers WHERE phone=?').get(p),
@@ -137,7 +177,7 @@ function createRepo(db) {
     listAudit: (limit) => q('SELECT * FROM audit_log ORDER BY id DESC LIMIT ?').all(limit || 100),
 
     /** 演示重置：清空业务数据（保留商家账号） */
-    wipeBusinessData: () => db.exec(`DELETE FROM payments; DELETE FROM customer_events; DELETE FROM bookings; DELETE FROM customers; DELETE FROM sms_codes;
+    wipeBusinessData: () => db.exec(`DELETE FROM reviews; DELETE FROM feedback; DELETE FROM payments; DELETE FROM customer_events; DELETE FROM bookings; DELETE FROM customers; DELETE FROM sms_codes;
       DELETE FROM sessions WHERE kind='customer'; DELETE FROM services; DELETE FROM images; DELETE FROM settings; DELETE FROM login_failures;`),
   };
   return R;

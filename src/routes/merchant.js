@@ -15,7 +15,7 @@ module.exports = async function (app) {
   app.post('/login', async req => { const b = req.body || {}; return auth.merchantLogin(b.username, b.password, req.ip); });
   app.post('/logout', async req => { auth.logout(tok(req)); return { ok: true }; });
   app.get('/me', async req => ({ username: req.user.username, role: req.user.role, name: req.user.display_name }));
-  app.get('/dashboard', async () => merchant.dashboard());
+  app.get('/dashboard', async () => ({ ...merchant.dashboard(), inbox: app.ctx.reviews.counts() }));
   app.get('/bookings', async req => merchant.bookings(req.query.scope || 'today', req.query.date));
   for (const op of ['accept', 'reject', 'arrive', 'done', 'noshow', 'cancel'])
     app.post(`/bookings/:id/${op}`, async req => booking.merchantAction(req.user, req.params.id, op, { ip: req.ip }));
@@ -37,6 +37,15 @@ module.exports = async function (app) {
     repo.audit({ actor_type: 'merchant', actor_id: req.user.id, actor_name: req.user.username, action: 'image.upload', target: 'image:' + r.id, detail: { bytes: r.bytes, mime: r.mime }, ip: req.ip });
     reply.code(201); return r;
   });
+  // 评价管理 / 意见反馈 / 门店信息
+  app.get('/reviews', async req => app.ctx.reviews.merchantReviews(req.user, req.query.filter));
+  const doReply = async req => app.ctx.reviews.reply(req.user, req.params.id, (req.body || {}).text, req.ip);
+  app.post('/reviews/:id/reply', doReply); app.put('/reviews/:id/reply', doReply);
+  for (const op of ['hide', 'unhide', 'approve']) app.post(`/reviews/:id/${op}`, async req => app.ctx.reviews.setVisibility(req.user, req.params.id, op, req.ip));
+  app.get('/feedback', async req => app.ctx.reviews.merchantFeedback(req.user, req.query.status));
+  app.put('/feedback/:id', async req => app.ctx.reviews.updateFeedback(req.user, req.params.id, req.body || {}, req.ip));
+  app.get('/inbox', async () => app.ctx.reviews.counts());
+  app.put('/shop', async req => app.ctx.reviews.updateShop(req.user, req.body || {}, req.ip));
   app.get('/audit', async req => merchant.auditLog(req.user));
   app.post('/demo-reset', async req => {
     if (!cfg.demoMode) throw new AppError(404, 'NOT_FOUND', 'not found');

@@ -366,3 +366,188 @@ test('顾客端实时：商家改服务后公开 SSE 收到 service 事件（不
   const h = await api('GET', '/api/health');
   assert.ok(h.body.version && 'commit' in h.body && h.body.features.includes('images'));
 });
+
+// ---------------- 评价与反馈 ----------------
+function doneBooking(phone, status) {
+  const c = R.getCustomerByPhone(phone), d = D(-2);
+  return R.insertBooking({ code: 'RV' + Math.random().toString(36).slice(2, 9), customer_id: c.id, service_id: 2, service_name: '猫眼 / 渐变款', price_cents: 16800, duration_min: 90, date: d, start_min: 660, end_min: 750,
+    start_at: U.startAt(d, 660), end_at: U.startAt(d, 750), name: '测试', note: '', status: status || 'done', deposit_cents: 0, deposit_status: null, hold_until: null });
+}
+const cup = (buf, token) => fetch(base + '/api/me/images', { method: 'POST', headers: { 'content-type': 'image/jpeg', authorization: 'Bearer ' + token }, body: buf }).then(async r => ({ status: r.status, body: await r.json().catch(() => null) }));
+const resetRules = () => api('POST', '/api/merchant/settings/reset', null, OWNER);
+function sseCollect(url) {
+  const ac = new AbortController(); let buf = '';
+  const ready = fetch(base + url, { signal: ac.signal }).then(async res => { const rd = res.body.getReader(); (async () => { try { for (;;) { const { value, done } = await rd.read(); if (done) break; buf += Buffer.from(value).toString(); } } catch {} })(); });
+  return { ready, text: () => buf, close: () => ac.abort() };
+}
+const waitFor = async (fn, ms = 3000) => { const t = Date.now(); while (Date.now() - t < ms) { if (fn()) return true; await new Promise(r => setTimeout(r, 30)); } return false; };
+
+test('评价：只有本人已完成的订单可评价；一单一次；期限内可修改；文本清洗；照片须本人上传', async () => {
+  const phone = newPhone(), tok = await login(phone, '评价测试');
+  const pend = doneBooking(phone, 'confirmed');
+  let r = await api('POST', '/api/reviews', { bookingId: pend, stars: 5 }, tok);
+  assert.equal(r.status, 403); assert.equal(r.body.error.code, 'NOT_COMPLETED');
+  const bid = doneBooking(phone);
+  const other = await login(newPhone());
+  assert.equal((await api('POST', '/api/reviews', { bookingId: bid, stars: 5 }, other)).status, 404);
+  assert.equal((await api('POST', '/api/reviews', { bookingId: bid, stars: 5 })).status, 401);
+  const mine = await api('GET', '/api/me/bookings', null, tok);
+  assert.equal(mine.body.find(b => b.id === bid).canReview, true);
+  assert.equal((await api('POST', '/api/reviews', { bookingId: bid, stars: 5, text: 'x'.repeat(301) }, tok)).body.error.code, 'TEXT_TOO_LONG');
+  assert.equal((await api('POST', '/api/reviews', { bookingId: bid, stars: 5, tags: ['不存在的标签'] }, tok)).body.error.code, 'BAD_TAG');
+  assert.equal((await api('POST', '/api/reviews', { bookingId: bid, stars: 6 }, tok)).status, 400);
+  const mimg = (await up(JPG, 'image/jpeg', OWNER)).body;      // 商家上传的图不能冒充顾客晒图
+  assert.equal((await api('POST', '/api/reviews', { bookingId: bid, stars: 5, photos: [mimg.id] }, tok)).body.error.code, 'IMAGE_NOT_FOUND');
+  const ph = await cup(JPG, tok); assert.equal(ph.status, 201);
+  r = await api('POST', '/api/reviews', { bookingId: bid, stars: 5, tags: ['手法专业', '准时'], text: '很好<script>alert(1)</script>', photos: [ph.body.id] }, tok);
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.equal(r.body.text, '很好＜script＞alert(1)＜/script＞'); assert.equal(r.body.photos.length, 1); assert.equal(r.body.canEdit, true);
+  assert.equal((await api('POST', '/api/reviews', { bookingId: bid, stars: 4 }, tok)).body.error.code, 'ALREADY_REVIEWED');
+  const e = await api('PUT', '/api/reviews/' + r.body.id, { stars: 4, tags: ['环境干净'], text: '改一下', photos: [] }, tok);
+  assert.equal(e.status, 200); assert.equal(e.body.stars, 4); assert.equal(e.body.photos.length, 0);
+  assert.equal((await api('PUT', '/api/reviews/' + r.body.id, { stars: 4 }, other)).status, 404);
+  R.db.prepare('UPDATE reviews SET created_at=? WHERE id=?').run(Date.now() - 8 * 864e5, r.body.id);
+  const late = await api('PUT', '/api/reviews/' + r.body.id, { stars: 3 }, tok);
+  assert.equal(late.status, 403); assert.equal(late.body.error.code, 'EDIT_EXPIRED'); assert.match(late.body.error.message, /7 天/);
+  const pub = await api('GET', '/api/reviews?serviceId=2&limit=30');
+  const it = pub.body.items.find(x => x.id === r.body.id);
+  assert.match(it.who, /^\d{3}\*{4}\d{4}$/); assert.ok(!JSON.stringify(pub.body).includes(phone));
+});
+
+test('低分评价：实时提醒店主 + 角标；查看后清除；带打码手机号与订单信息', async () => {
+  const phone = newPhone(), tok = await login(phone), bid = doneBooking(phone);
+  const s = sseCollect('/api/merchant/stream?token=' + OWNER); await s.ready; await new Promise(r => setTimeout(r, 80));
+  const r = await api('POST', '/api/reviews', { bookingId: bid, stars: 2, tags: ['等待太久'], text: '等太久了' }, tok);
+  assert.equal(r.status, 201);
+  assert.ok(await waitFor(() => /"type":"review"[^\n]*"low":true/.test(s.text())), s.text()); s.close();
+  let d = await api('GET', '/api/merchant/dashboard', null, OWNER);
+  assert.ok(d.body.inbox.reviews.lowNew >= 1);
+  const st = await api('GET', '/api/merchant/reviews?filter=low', null, STAFF);    // 员工查看不清除店主提醒
+  const item = st.body.items.find(x => x.id === r.body.id);
+  assert.equal(item.alertNew, true); assert.match(item.phone, /^\d{3}\*{4}\d{4}$/); assert.ok(item.bookingCode && item.date && item.time);
+  await api('GET', '/api/merchant/reviews?filter=low', null, OWNER);
+  d = await api('GET', '/api/merchant/dashboard', null, OWNER);
+  assert.equal(d.body.inbox.reviews.lowNew, 0);
+});
+
+test('商家回复 / 隐藏 / 先审后发；隐藏的不进公开统计但计入商家统计', async () => {
+  const phone = newPhone(), tok = await login(phone), bid = doneBooking(phone);
+  const rv = (await api('POST', '/api/reviews', { bookingId: bid, stars: 5, text: '回复测试' }, tok)).body;
+  assert.equal((await api('PUT', `/api/merchant/reviews/${rv.id}/reply`, { text: '谢谢' }, STAFF)).status, 403);
+  assert.equal((await api('PUT', `/api/merchant/reviews/${rv.id}/reply`, { text: '' }, OWNER)).status, 400);
+  assert.equal((await api('PUT', `/api/merchant/reviews/${rv.id}/reply`, { text: '谢谢光临' }, OWNER)).body.reply.text, '谢谢光临');
+  assert.equal((await api('PUT', `/api/merchant/reviews/${rv.id}/reply`, { text: '谢谢光临，欢迎再来' }, OWNER)).body.reply.text, '谢谢光临，欢迎再来');
+  let pub = await api('GET', '/api/reviews?serviceId=2&limit=30');
+  assert.equal(pub.body.items.find(x => x.id === rv.id).reply.text, '谢谢光临，欢迎再来');
+  const before = pub.body.summary.count, mBefore = (await api('GET', '/api/merchant/reviews', null, OWNER)).body.counts.total;
+  assert.equal((await api('POST', `/api/merchant/reviews/${rv.id}/hide`, null, STAFF)).status, 403);
+  await api('POST', `/api/merchant/reviews/${rv.id}/hide`, null, OWNER);
+  pub = await api('GET', '/api/reviews?serviceId=2&limit=30');
+  assert.ok(!pub.body.items.some(x => x.id === rv.id)); assert.equal(pub.body.summary.count, before - 1);
+  assert.equal((await api('GET', '/api/merchant/reviews', null, OWNER)).body.counts.total, mBefore);
+  await api('POST', `/api/merchant/reviews/${rv.id}/unhide`, null, OWNER);
+  assert.equal((await api('GET', '/api/reviews?serviceId=2&limit=30')).body.summary.count, before);
+  // 先审后发：仅低分
+  await setRule({ review: { moderate: 'low' } });
+  const p2 = newPhone(), t2 = await login(p2), b2 = doneBooking(p2);
+  const low = (await api('POST', '/api/reviews', { bookingId: b2, stars: 1 }, t2)).body;
+  assert.equal(low.status, 'pending');
+  assert.ok(!(await api('GET', '/api/reviews?serviceId=2&limit=30')).body.items.some(x => x.id === low.id));
+  assert.equal((await api('POST', `/api/merchant/reviews/${rv.id}/approve`, null, OWNER)).status, 409);
+  await api('POST', `/api/merchant/reviews/${low.id}/approve`, null, OWNER);
+  assert.ok((await api('GET', '/api/reviews?serviceId=2&limit=30')).body.items.some(x => x.id === low.id));
+  await resetRules();
+});
+
+test('功能开关：关闭后服务端拒绝（403 FEATURE_OFF）且公开接口隐藏；设置校验；员工不能改', async () => {
+  const phone = newPhone(), tok = await login(phone), bid = doneBooking(phone);
+  const s = sseCollect('/api/stream'); await s.ready; await new Promise(r => setTimeout(r, 80));
+  await setRule({ review: { on: false } });
+  assert.ok(await waitFor(() => s.text().includes('"settings"'))); s.close();
+  let r = await api('POST', '/api/reviews', { bookingId: bid, stars: 5 }, tok);
+  assert.equal(r.status, 403); assert.equal(r.body.error.code, 'FEATURE_OFF'); assert.match(r.body.error.message, /关闭评价/);
+  assert.equal((await api('GET', '/api/me/bookings', null, tok)).body.find(b => b.id === bid).canReview, false);
+  assert.equal((await api('GET', '/api/shop')).body.features.review, false);
+  await setRule({ review: { on: true, photos: false } });
+  assert.equal((await api('GET', '/api/shop')).body.features.reviewPhotos, 0);
+  const ph = await cup(JPG, tok); assert.equal(ph.status, 201);   // 反馈仍允许图片
+  assert.equal((await api('POST', '/api/reviews', { bookingId: bid, stars: 5, photos: [ph.body.id] }, tok)).body.error.code, 'FEATURE_OFF');
+  await setRule({ feedback: { photos: false } });
+  assert.equal((await cup(JPG, tok)).status, 403);
+  await setRule({ reviewPublic: { on: false } });
+  assert.equal((await api('GET', '/api/reviews')).status, 403);
+  const shop = (await api('GET', '/api/shop')).body;
+  assert.equal(shop.rating, null); assert.ok(shop.services.every(x => x.rating === null));
+  await setRule({ reviewPublic: { on: true }, reply: { on: false } });
+  const any = (await api('GET', '/api/merchant/reviews', null, OWNER)).body.items[0];
+  assert.equal((await api('PUT', `/api/merchant/reviews/${any.id}/reply`, { text: 'x' }, OWNER)).body.error.code, 'FEATURE_OFF');
+  assert.ok((await api('GET', '/api/reviews?limit=30')).body.items.every(x => x.reply === null), '回复关闭时公开页不显示回复');
+  await setRule({ feedback: { on: false }, contact: { on: false } });
+  r = await api('POST', '/api/feedback', { type: '其他', text: '测试反馈' }, tok);
+  assert.equal(r.status, 403); assert.equal(r.body.error.code, 'FEATURE_OFF');
+  assert.equal((await api('GET', '/api/shop')).body.shop.phone, null);
+  // 校验
+  assert.equal((await setRule({ review: { tagsPos: [] } })).status, 400);
+  assert.equal((await setRule({ review: { tagsNeg: ['这个标签实在太长了啊'] } })).body.error.path, 'review.tagsNeg');
+  assert.equal((await setRule({ review: { moderate: 'maybe' } })).status, 400);
+  assert.equal((await setRule({ review: { lowStar: 5 } })).status, 400);
+  assert.equal((await api('PUT', '/api/merchant/settings', { review: { on: false } }, STAFF)).status, 403);
+  const ok = await setRule({ review: { tagsPos: ['手法好', '手法好', '<i>美</i>'] }, feedback: { types: ['建议', '投诉'] } });
+  assert.deepEqual(ok.body.values.review.tagsPos, ['手法好', '＜i＞美＜/i＞']);
+  assert.deepEqual((await api('GET', '/api/shop')).body.features.feedbackTypes, ['建议', '投诉']);
+  await resetRules();
+  const f = (await api('GET', '/api/shop')).body.features;
+  assert.ok(f.review && f.reply && f.reviewPublic && f.feedback && f.contact, '默认全部开启');
+});
+
+test('意见反馈：仅商家可见；状态与内部备注；回访时显示完整号码；频率限制', async () => {
+  const phone = newPhone(), tok = await login(phone, '反馈测试');
+  assert.equal((await api('POST', '/api/feedback', { type: '其他', text: '没登录' })).status, 401);
+  assert.equal((await api('POST', '/api/feedback', { type: '乱写', text: '类型不对' }, tok)).body.error.code, 'BAD_TYPE');
+  assert.equal((await api('POST', '/api/feedback', { type: '其他', text: 'a' }, tok)).status, 400);
+  const s = sseCollect('/api/merchant/stream?token=' + OWNER); await s.ready; await new Promise(r => setTimeout(r, 80));
+  const pub = sseCollect('/api/stream'); await pub.ready;
+  const ph = (await cup(JPG, tok)).body;
+  const r = await api('POST', '/api/feedback', { type: '服务投诉', text: '希望<b>改进</b>', contact: 'phone', photos: [ph.id] }, tok);
+  assert.equal(r.status, 201);
+  assert.ok(await waitFor(() => /"type":"feedback"[^\n]*"isNew":true/.test(s.text()))); s.close();
+  assert.ok(!pub.text().includes('feedback'), '公开 SSE 不推送反馈'); pub.close();
+  let m = await api('GET', '/api/merchant/feedback?status=open', null, OWNER);
+  let it = m.body.items.find(x => x.id === r.body.id);
+  assert.equal(it.phone, phone); assert.equal(it.text, '希望＜b＞改进＜/b＞'); assert.equal(it.photos.length, 1);
+  assert.equal((await api('PUT', '/api/merchant/feedback/' + it.id, { status: 'doing' }, STAFF)).status, 403);
+  assert.equal((await api('PUT', '/api/merchant/feedback/' + it.id, { status: 'bad' }, OWNER)).status, 400);
+  const u = await api('PUT', '/api/merchant/feedback/' + it.id, { status: 'done', note: '已电话联系' }, OWNER);
+  assert.equal(u.body.status, 'done'); assert.equal(u.body.note, '已电话联系');
+  const mine = await api('GET', '/api/me/feedback', null, tok);
+  assert.equal(mine.body[0].statusText, '已处理'); assert.ok(!('note' in mine.body[0]), '顾客看不到内部备注');
+  const r2 = await api('POST', '/api/feedback', { type: '其他', text: '不用回复', contact: 'none' }, tok);
+  it = (await api('GET', '/api/merchant/feedback', null, OWNER)).body.items.find(x => x.id === r2.body.id);
+  assert.match(it.phone, /^\d{3}\*{4}\d{4}$/);
+  for (let i = 0; i < 3; i++) assert.equal((await api('POST', '/api/feedback', { type: '其他', text: '第' + i + '条' }, tok)).status, 201);
+  const lim = await api('POST', '/api/feedback', { type: '其他', text: '第6条' }, tok);
+  assert.equal(lim.status, 429); assert.equal(lim.body.error.code, 'TOO_FREQUENT');
+});
+
+test('评价频率限制 + 门店联系方式可修改', async () => {
+  const phone = newPhone(), tok = await login(phone), bid = doneBooking(phone);
+  const rv = (await api('POST', '/api/reviews', { bookingId: bid, stars: 5 }, tok)).body;
+  let last;
+  for (let i = 0; i < 10; i++) last = await api('PUT', '/api/reviews/' + rv.id, { stars: 4 }, tok);
+  assert.equal(last.status, 429); assert.equal(last.body.error.code, 'TOO_FREQUENT');
+  assert.equal((await api('PUT', '/api/merchant/shop', { phone: 'abc' }, OWNER)).body.error.code, 'BAD_PHONE');
+  assert.equal((await api('PUT', '/api/merchant/shop', { phone: '020-1234-5678' }, STAFF)).status, 403);
+  assert.equal((await api('PUT', '/api/merchant/shop', { phone: '020-1234-5678', address: '示例路 1 号' }, OWNER)).status, 200);
+  const sh = (await api('GET', '/api/shop')).body.shop;
+  assert.equal(sh.phone, '020-1234-5678'); assert.equal(sh.address, '示例路 1 号');
+  assert.equal((await api('GET', '/api/merchant/settings', null, OWNER)).body.shop.phone, '020-1234-5678');
+});
+
+test('示例评价：公开展示有内容、标记为示例、手机号打码', async () => {
+  const r = await api('GET', '/api/reviews?limit=30');
+  const seeds = r.body.items.filter(x => x.seed);
+  assert.ok(seeds.length >= 8); assert.ok(seeds.some(x => x.reply)); assert.ok(seeds.some(x => x.photos.length));
+  assert.ok(seeds.every(x => /^\d{3}\*{4}\d{4}$/.test(x.who)));
+  const shop = (await api('GET', '/api/shop')).body;
+  assert.ok(shop.rating.count >= 8 && shop.rating.avg >= 1 && shop.rating.tags.length);
+});

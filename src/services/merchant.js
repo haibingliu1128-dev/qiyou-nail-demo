@@ -48,7 +48,8 @@ function createMerchantService(ctx, B) {
     return { ok: true };
   }
   function getSettings() {
-    return { values: B.settings(), schema: Rules.SCHEMA, ranges: Rules.RANGES, depositRange: Rules.DEP_RANGE, defaults: Rules.DEFAULTS,
+    const shop = repo.getShop();
+    return { shop: { phone: shop.phone, address: shop.address }, lists: Rules.LISTS, values: B.settings(), schema: Rules.SCHEMA, ranges: Rules.RANGES, depositRange: Rules.DEP_RANGE, defaults: Rules.DEFAULTS,
       services: repo.listServices(true).filter(s => s.active).map(s => ({ id: s.id, name: s.name, depositOn: !!s.deposit_on, deposit: s.deposit_cents / 100 })) };
   }
   function updateSettings(user, patch, ip) {

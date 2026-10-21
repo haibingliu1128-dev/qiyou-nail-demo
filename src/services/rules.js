@@ -9,7 +9,17 @@ const DEFAULTS = {
   grace: { on: true, v: 15 },
   confirmNew: { on: true },
   deposit: { on: true, force: 30 },
+  // 评价与反馈（每项可单独开关；默认全部开启）
+  review: { on: true, editDays: 7, photos: true, maxPhotos: 3, lowStar: 3, moderate: 'off',
+    tagsPos: ['手法专业', '准时', '环境干净', '性价比高', '服务热情', '效果满意'], tagsNeg: ['等待太久', '效果一般', '沟通不畅', '价格偏高'] },
+  reply: { on: true },
+  reviewPublic: { on: true },
+  feedback: { on: true, photos: true, types: ['功能建议', '服务投诉', '环境卫生', '预约问题', '其他'] },
+  contact: { on: true },
 };
+const BOOLS = new Set(['review.photos', 'feedback.photos']);
+// 可编辑的文字列表：[最少项, 最多项, 每项最长字数, 名称]
+const LISTS = { 'review.tagsPos': [1, 12, 8, '好评标签'], 'review.tagsNeg': [1, 12, 8, '差评标签'], 'feedback.types': [1, 10, 8, '反馈类型'] };
 // [min, max, step, unit, label]
 const RANGES = {
   'maxOpen.v': [1, 10, 1, '个', '最多'], 'perDay.v': [1, 10, 1, '个', '每天最多'], 'perWeek.v': [1, 30, 1, '个', '每周最多'], 'perMonth.v': [1, 60, 1, '个', '每月最多'],
@@ -17,9 +27,10 @@ const RANGES = {
   'cancelH.v': [1, 72, 1, '小时', '开始前'], 'cancelMonth.v': [1, 30, 1, '次', '每月最多'],
   'noshow.n': [1, 10, 1, '次', '爽约达到'], 'noshow.days': [7, 365, 1, '天', '统计周期'], 'noshow.release': [1, 365, 1, '天', '自动解除'],
   'grace.v': [5, 120, 5, '分钟', '超时未到'], 'deposit.force': [10, 500, 10, '元', '受限顾客定金'],
+  'review.editDays': [1, 30, 1, '天', '评价可修改期限'], 'review.maxPhotos': [0, 3, 1, '张', '每条最多照片'], 'review.lowStar': [1, 4, 1, '星', '低分提醒（≤）'],
 };
 const DEP_RANGE = [10, 500, 10];   // 单项目定金（元）
-const ENUMS = { 'noshow.act': ['block', 'deposit'] };
+const ENUMS = { 'noshow.act': ['block', 'deposit'], 'review.moderate': ['off', 'low', 'all'] };
 const SCHEMA = [
   { group: '身份验证', rules: [{ key: 'verify', title: '首次预约验证手机号', desc: '短信验证码登录后才能预约（演示环境验证码显示在屏幕上）' }] },
   { group: '数量限制', rules: [
@@ -37,6 +48,12 @@ const SCHEMA = [
   { group: '定金与审核', rules: [
     { key: 'deposit', title: '定金', desc: '按项目设置的定金（到店抵扣，爽约不退）；受限顾客的定金金额', fields: ['force'] },
     { key: 'confirmNew', title: '新客预约需门店确认', desc: '没有到店记录的顾客，预约先进入「待确认」' }] },
+  { group: '评价与反馈', rules: [
+    { key: 'review', title: '服务后评价', desc: '顾客对「已完成」的订单评价（每单一次，期限内可修改）；低于等于设定星级会提醒店主', fields: ['editDays', 'lowStar', 'maxPhotos'], bools: ['photos'], enum: 'moderate', lists: ['tagsPos', 'tagsNeg'] },
+    { key: 'reply', title: '商家回复', desc: '店主可回复每条评价（一条回复，可修改）；顾客和公开页可见' },
+    { key: 'reviewPublic', title: '公开展示评价', desc: '服务详情页和首页显示评分、标签统计和最近评价（手机号打码）' },
+    { key: 'feedback', title: '意见反馈', desc: '顾客可随时提交建议/投诉，仅商家可见', bools: ['photos'], lists: ['types'] },
+    { key: 'contact', title: '联系商家按钮', desc: '顾客端显示「联系商家」（拨打门店电话、查看地址）' }] },
 ];
 const clone = o => JSON.parse(JSON.stringify(o));
 function merged(stored) {
@@ -53,7 +70,15 @@ function validatePatch(cur, patch) {
     const nv = { ...cur[k] };
     for (const [f, val] of Object.entries(v)) {
       const p = `${k}.${f}`;
-      if (f === 'on') { if (typeof val !== 'boolean') throw { path: p, msg: '开关须为 true/false' }; nv.on = val; continue; }
+      if (f === 'on' || BOOLS.has(p)) { if (typeof val !== 'boolean') throw { path: p, msg: '开关须为 true/false' }; nv[f] = val; continue; }
+      if (LISTS[p]) {
+        const [mn, mx, len, name] = LISTS[p];
+        if (!Array.isArray(val)) throw { path: p, msg: `${name}格式错误` };
+        const items = [...new Set(val.map(x => cleanText(x, len + 1)).filter(Boolean))];
+        if (items.some(x => x.length > len)) throw { path: p, msg: `${name}每项最多 ${len} 个字` };
+        if (items.length < mn || items.length > mx) throw { path: p, msg: `${name}需 ${mn}–${mx} 项` };
+        nv[f] = items; continue;
+      }
       if (ENUMS[p]) { if (!ENUMS[p].includes(val)) throw { path: p, msg: `只能是 ${ENUMS[p].join('/')}` }; nv[f] = val; continue; }
       const r = RANGES[p]; if (!r) throw { path: p, msg: `未知字段 ${p}` };
       if (typeof val !== 'number' || !Number.isInteger(val)) throw { path: p, msg: `${r[4]}须为整数` };
@@ -64,6 +89,10 @@ function validatePatch(cur, patch) {
     out[k] = nv;
   }
   return out;
+}
+/** 文本清洗：去控制字符、把尖括号换成全角（防 HTML 注入；前端输出时仍会转义）、截断 */
+function cleanText(v, max) {
+  return String(v == null ? '' : v).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').replace(/</g, '＜').replace(/>/g, '＞').trim().slice(0, max);
 }
 /** 顾客可见的规则文案（引用当前数值） */
 function customerRules(C) {
@@ -78,4 +107,4 @@ function customerRules(C) {
   if (C.verify.on) a.push('首次预约需验证手机号');
   return a;
 }
-module.exports = { DEFAULTS, RANGES, DEP_RANGE, ENUMS, SCHEMA, merged, validatePatch, customerRules };
+module.exports = { DEFAULTS, RANGES, DEP_RANGE, ENUMS, BOOLS, LISTS, SCHEMA, merged, validatePatch, customerRules, cleanText };

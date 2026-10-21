@@ -118,6 +118,12 @@ awaiting_payment / pending / confirmed ─顾客或商家取消→ cancelled（�
 | POST | /api/pay/mock/:outTradeNo/confirm | 模拟支付成功（仅 PAY_PROVIDER=mock） |
 | POST | /api/pay/notify/wechat | 微信支付回调（接入后启用） |
 | GET | /api/dev/sms-outbox?phone= | 开发模式验证码发件箱 |
+| GET | /api/reviews?serviceId=&offset=&limit= | 公开评价：汇总（均分/条数/好评率/星级分布/标签统计）+ 列表（手机号打码、含商家回复）；关闭「公开展示」时 403 |
+| POST | /api/reviews `{bookingId,stars,tags,text,photos}` | 评价本人「已完成」订单（每单一次） |
+| PUT | /api/reviews/:id | 修改评价（发布后 N 天内，N 可设置） |
+| POST | /api/me/images | 顾客上传评价/反馈图片（同商家上传的校验与限制） |
+| POST | /api/feedback `{type,text,photos,contact}` | 意见反馈（仅商家可见；contact = phone/sms/none） |
+| GET | /api/me/feedback | 我的反馈及处理状态（不含商家内部备注） |
 
 商家端（`Authorization: Bearer <商家令牌>`；SSE 用 `?token=`）
 
@@ -137,6 +143,13 @@ awaiting_payment / pending / confirmed ─顾客或商家取消→ cancelled（�
 | GET/POST/PUT/DELETE | /api/merchant/services[/:id] | 服务管理、单项定金、`images:[图片ID…]`（≤3 张，第一张为封面；店主；删除=下架） |
 | POST | /api/merchant/images | 上传图片（店主）。请求体为图片二进制，`Content-Type: image/jpeg\|png\|webp`；≤2MB；按文件头魔数校验真实格式；返回 `{id,url}` |
 | GET | /api/merchant/audit | 操作日志（店主） |
+| GET | /api/merchant/reviews?filter=all\|unreplied\|low\|pending\|hidden | 评价管理（含打码手机号、订单号、时间；店主查看后清除低分提醒） |
+| PUT | /api/merchant/reviews/:id/reply `{text}` | 回复 / 修改回复（店主；一条回复） |
+| POST | /api/merchant/reviews/:id/{hide,unhide,approve} | 隐藏 / 取消隐藏 / 通过审核（店主） |
+| GET | /api/merchant/feedback?status=open\|doing\|done | 反馈收件箱（顾客选择回访时显示完整号码） |
+| PUT | /api/merchant/feedback/:id `{status,note}` | 处理状态 + 内部备注（店主） |
+| GET | /api/merchant/inbox | 角标计数：待回复、新低分、待审核、待处理反馈 |
+| PUT | /api/merchant/shop `{phone,address}` | 门店电话/地址（「联系商家」用；店主） |
 | GET | /api/merchant/stream | SSE：新预约/状态变化实时推送 |
 | POST | /api/merchant/demo-reset | 重置演示数据（DEMO_MODE=1，店主） |
 
@@ -146,10 +159,33 @@ awaiting_payment / pending / confirmed ─顾客或商家取消→ cancelled（�
 - 商家在「服务管理 → 新增/编辑服务」里选图（手机上可拍照或从相册选），最多 3 张，第一张为封面，可「设为封面 / 更换 / 删除」。
 - 前端用 canvas 压缩：最长边 ≤1080px、JPEG 质量 0.8（仍超 1.9MB 时降到 0.6）；原图超过 10MB 直接提示换图。
 - 服务端：仅店主可上传；只接受 JPG / PNG / WebP（看文件头，不信任 Content-Type）；压缩后 ≤2MB；超过 24 小时仍未被任何服务引用的上传图片由定时任务清理。
+- 评价晒图、反馈图片复用同一套压缩、校验和存储（顾客通过 `/api/me/images` 上传，只能使用本人上传的图片）。
 - 存储：当前直接存在 SQLite 的 `images` 表（BLOB，迁移 `002_images.sql`），所以 Render 免费实例无需额外配置也能用（但同样会随重启重置）。
   **换腾讯云 COS / 阿里云 OSS**：只需重写 `src/repo/sqlite.js` 里的 `putImage / getImage`（上传到对象存储并记录 key；读取时 302 到 CDN/签名 URL 或代理），业务代码和前端不用改。
 - 顾客端：服务列表显示封面（居中裁剪、懒加载），预约页顶部是可左右滑动的图片轮播；没有图片时显示插画占位。商家保存后，顾客页面通过 `/api/stream` 自动刷新。
 - 演示服务的默认配图在 `assets/seed-images/`，由 `scripts/gen_seed_images.py` 用 SVG 程序绘制后导出（无下载素材、无真人），首次启动写入数据库；老数据库升级到该迁移时会给演示服务补上默认图。
+
+## 评价与反馈
+四个部分都在「商家后台 → 防占号 → 设置 → 评价与反馈」里单独开关（默认全部开启，仅店主可改，修改后顾客页面通过 `/api/stream` 实时生效）。关闭的功能在顾客端隐藏，服务端同样拒绝（`403 FEATURE_OFF`，带中文提示）。
+
+| 设置 | 说明 |
+|---|---|
+| 服务后评价 | 只能评价本人、商家已标为「已完成」的订单；每单一条；发布后 **评价可修改期限**（1–30 天，默认 7）内可修改。1–5 星 + 标签 + 文字（≤300 字）+ 图片 |
+| └ 允许上传图片 / 每条最多照片 | 开关 + 0–3 张 |
+| └ 低分提醒（≤N 星） | 默认 ≤3 星：店主后台实时弹窗 + 首页红色提示条 + 角标，列表显示打码手机号和订单号，方便跟进；店主查看评价列表后清除 |
+| └ 先审后发 | 关闭 / 仅低分 / 全部。需审核的评价进入「待审核」，店主通过后才公开 |
+| └ 好评标签 / 差评标签 | 可增删（1–12 项，每项 ≤8 字）。4–5 星显示好评标签，1–3 星显示差评+好评标签 |
+| 商家回复 | 每条评价一条回复，可修改；关闭后不能回复，公开页也不显示回复 |
+| 公开展示评价 | 首页全店评分卡；服务卡片显示星级；预约页显示均分、条数、标签统计和最近评价；「全部评价」页含星级分布。关闭后接口不返回评分 |
+| 意见反馈 | 顾客随时提交（类型可编辑、≤500 字、可选图片、是否需要回复），**仅商家可见**；收件箱分 待处理/处理中/已处理，可写内部备注（顾客看不到）；新反馈实时角标 |
+| 联系商家按钮 | 拨打门店电话（`tel:` 链接）并显示地址、营业时间；关闭后 `/api/shop` 不再返回电话。电话和地址在设置页「门店联系方式」修改 |
+
+- **隐藏的评价**：不出现在公开列表，也**不计入公开的均分/条数/标签统计**；但仍计入商家后台的统计（评价管理页顶部）。待审核的评价同理。
+- **隐私**：公开页和商家评价列表的手机号都打码（如 138****5678）。反馈里只有顾客选择「电话回访 / 短信回复」时才向商家显示完整号码。
+- **防刷**：评价提交/修改每人每小时 ≤10 次；反馈每人每天 ≤5 条、每个 IP 每天 ≤20 条；顾客图片每人每小时 ≤30 张。超出返回 `429 TOO_FREQUENT`。
+- **文本清洗**：服务端去掉控制字符，把 `<` `>` 换成全角字符；前端输出时也统一转义，不会被注入 HTML。
+- **示例数据**：首次启动写入 8 条示例评价（部分带商家回复和示例插画图片）和 2 条示例反馈，全部标「示例」，顾客只以打码手机号显示，不含真实姓名。
+- 低分提醒和反馈事件只推送到商家端 SSE；顾客端 SSE 只收到「评价有更新」这类不含内容的信号。
 
 ## 始终浅色显示
 页面声明了 `<meta name="color-scheme" content="light only">` 和 CSS `color-scheme: light only`，并显式设置了 html/body/表单控件的前景和背景色。这样手机系统开启深色模式（包括 Chrome 安卓的「网页自动深色」）时不会把页面强制变暗，始终按设计的浅色主题显示。

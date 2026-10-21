@@ -32,14 +32,18 @@ function seedData(repo, images) {
   let k = 0;
   const bk = (si, date, hm, phone, name, status, extra) => {
     const s = SERVICES[si], m = typeof hm === 'number' ? hm : U.toMin(hm), e = m + s.dur;
-    repo.insertBooking({ code: 'QYDEMO' + String(++k).padStart(2, '0'), customer_id: cust(phone, name, true), service_id: sid[si], service_name: s.name, price_cents: s.price * 100, duration_min: s.dur,
+    return repo.insertBooking({ code: 'QYDEMO' + String(++k).padStart(2, '0'), customer_id: cust(phone, name, true), service_id: sid[si], service_name: s.name, price_cents: s.price * 100, duration_min: s.dur,
       date, start_min: m, end_min: e, start_at: U.startAt(date, m), end_at: U.startAt(date, e), name, note: '', status, deposit_cents: 0, deposit_status: null, hold_until: null, seed: 1,
       created_at: U.startAt(date, m) - 3 * 864e5, ...(extra || {}) });
   };
-  // 历史记录
-  bk(1, d(-5), '11:00', '13800001111', '林小姐', 'done'); bk(0, d(-3), '14:00', '13900002222', '陈女士', 'done');
-  bk(4, d(-7), '16:00', '13600004444', '王女士', 'done'); bk(0, d(-2), '10:30', '13500005555', '赵小姐', 'done');
-  bk(5, d(-20), '12:00', '13000001212', '何小姐', 'done');
+  // 历史记录（已完成的订单带示例评价）
+  const done = [
+    bk(1, d(-5), '11:00', '13800001111', '林小姐', 'done'), bk(0, d(-3), '14:00', '13900002222', '陈女士', 'done'),
+    bk(4, d(-7), '16:00', '13600004444', '王女士', 'done'), bk(0, d(-2), '10:30', '13500005555', '赵小姐', 'done'),
+    bk(5, d(-20), '12:00', '13000001212', '何小姐', 'done'), bk(2, d(-9), '15:00', '13100002323', '吴小姐', 'done'),
+    bk(3, d(-14), '13:00', '13200003434', '郑女士', 'done'), bk(1, d(-25), '17:00', '13300004545', '钱小姐', 'done'),
+  ];
+  seedReviews(repo, images, done);
   // 爽约示例顾客：周小姐 90 天内爽约 2 次 → 默认规则下被限制
   bk(0, d(-41), '15:00', '13700003333', '周小姐', 'no_show', { noshow_by: 'manual' });
   bk(0, d(-12), '15:00', '13700003333', '周小姐', 'no_show', { noshow_by: 'auto' });
@@ -56,6 +60,32 @@ function seedData(repo, images) {
   if (nx >= 600 && nx + 60 <= 1260) bk(0, t, nx, '13400006666', '孙女士', 'confirmed');
   if (nx + 120 >= 600 && nx + 210 <= 1260) bk(1, t, nx + 120, '13500005555', '赵小姐', 'confirmed');
 }
+// 示例评价 / 反馈：内容为虚构示例（seed=1，页面显示「示例」标签），顾客以打码手机号展示
+const REVIEWS = [
+  [5, ['手法专业', '效果满意'], '猫眼颜色很显白，老师很耐心地帮我挑色号。', '02_cateye', '谢谢喜欢～下次来可以试试新到的冰透色。'],
+  [5, ['准时', '环境干净'], '准点开始，一个小时左右做完，店里很干净。', null, null],
+  [4, ['服务热情', '性价比高'], '手膜很舒服，价格也合适，就是周末人有点多。', null, '感谢建议！周末可以提前两天预约，时段会多一些。'],
+  [3, ['等待太久'], '到店后等了二十分钟才开始，颜色还不错。', null, '非常抱歉让您久等了，我们已调整预约间隔，下次到店为您免费加一次手部护理。'],
+  [5, ['手法专业'], '卸甲很轻柔，甲面没有变薄。', null, null],
+  [5, ['效果满意', '手法专业'], '带了参考图，画得比图上还精致！', '03_art', '谢谢认可～欢迎常来定制。'],
+  [4, ['环境干净'], '足部护理很细致，下次还来。', null, null],
+  [5, ['性价比高', '服务热情'], '', null, null],
+];
+function seedReviews(repo, images, bookingIds) {
+  bookingIds.forEach((bid, i) => {
+    const r = REVIEWS[i]; if (!r) return;
+    const b = repo.getBooking(bid), at = b.end_at + 3 * 3600e3;
+    repo.insertReview({ booking_id: bid, customer_id: b.customer_id, service_id: b.service_id, stars: r[0], tags: JSON.stringify(r[1]), text: r[2],
+      photos: JSON.stringify(seedImage(images, r[3])), status: 'public', seed: 1, alert_seen: 1, created_at: at,
+      reply_text: r[4], reply_at: r[4] ? at + 5 * 3600e3 : null, reply_by: r[4] ? '店主（演示）' : null });
+  });
+  const c1 = repo.getCustomerByPhone('13800001111'), c2 = repo.getCustomerByPhone('13900002222');
+  const t = Date.now();
+  const f1 = repo.insertFeedback({ customer_id: c1.id, type: '功能建议', text: '希望预约时可以上传想做的款式图片。', photos: '[]', contact: 'none', seed: 1, created_at: t - 6 * 864e5 });
+  repo.updateFeedback(f1, { status: 'done', note: '已记录到需求清单（示例）', seen: 1 });
+  const f2 = repo.insertFeedback({ customer_id: c2.id, type: '环境卫生', text: '洗手台旁边可以多放一些擦手纸。', photos: '[]', contact: 'sms', seed: 1, created_at: t - 864e5 });
+  repo.updateFeedback(f2, { seen: 1 });
+}
 async function seed(repo, auth, { force, images } = {}) {
   await ensureAccounts(repo, auth);
   if (repo.getShop() && !force) {
@@ -65,6 +95,11 @@ async function seed(repo, auth, { force, images } = {}) {
         const def = SERVICES.find(x => x.name === s.name);
         if (def && (s.images || '[]') === '[]') repo.updateService(s.id, { images: JSON.stringify(seedImage(images, def.img)) });
       }
+    });
+    // 升级到 003_reviews_feedback 时：用已有的示例「已完成」订单补上示例评价（只做一次）
+    if ((repo.db.appliedNow || []).includes('003_reviews_feedback.sql') && !repo.reviewRows({}).length) repo.tx(() => {
+      const ids = repo.db.prepare("SELECT id FROM bookings WHERE seed=1 AND status='done' ORDER BY id LIMIT 8").all().map(r => r.id);
+      if (ids.length && repo.getCustomerByPhone('13800001111') && repo.getCustomerByPhone('13900002222')) seedReviews(repo, images, ids);
     });
     return false;
   }
