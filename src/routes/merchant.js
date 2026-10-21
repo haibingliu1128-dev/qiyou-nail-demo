@@ -30,11 +30,18 @@ module.exports = async function (app) {
   app.post('/services', async req => merchant.saveService(req.user, null, req.body || {}, req.ip));
   app.put('/services/:id', async req => merchant.saveService(req.user, req.params.id, req.body || {}, req.ip));
   app.delete('/services/:id', async req => merchant.deleteService(req.user, req.params.id, req.ip));
+  // 上传图片（店主）：请求体为压缩后的图片二进制，返回 {id,url}；保存服务时把 id 放进 images 数组
+  app.post('/images', async (req, reply) => {
+    if (req.user.role !== 'owner') throw new AppError(403, 'OWNER_ONLY', '仅店主可上传服务图片');
+    const r = app.ctx.images.save(req.body, { type: 'merchant', id: req.user.id });
+    repo.audit({ actor_type: 'merchant', actor_id: req.user.id, actor_name: req.user.username, action: 'image.upload', target: 'image:' + r.id, detail: { bytes: r.bytes, mime: r.mime }, ip: req.ip });
+    reply.code(201); return r;
+  });
   app.get('/audit', async req => merchant.auditLog(req.user));
   app.post('/demo-reset', async req => {
     if (!cfg.demoMode) throw new AppError(404, 'NOT_FOUND', 'not found');
     if (req.user.role !== 'owner') throw new AppError(403, 'OWNER_ONLY', '仅店主可重置');
-    await seed(repo, auth, { force: true });
+    await seed(repo, auth, { force: true, images: app.ctx.images });
     repo.audit({ actor_type: 'merchant', actor_id: req.user.id, actor_name: req.user.username, action: 'demo.reset', ip: req.ip });
     bus.emit('change', { type: 'reset' });
     return { ok: true };

@@ -295,3 +295,74 @@ test('商家登录：错误密码、连续失败锁定', async () => {
   const l = await api('POST', '/api/merchant/login', { username: 'staff', password: 'staff2026' });
   assert.equal(l.status, 429);
 });
+
+// ---------------- 服务图片 ----------------
+const JPG = fs.readFileSync(path.join(__dirname, '..', 'assets', 'seed-images', '01_solid.jpg'));
+const PNG1 = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8cfc0f01f0005000201a5d6c5e50000000049454e44ae426082', 'hex');
+const up = (buf, type, token) => fetch(base + '/api/merchant/images', { method: 'POST', headers: { 'content-type': type, ...(token ? { authorization: 'Bearer ' + token } : {}) }, body: buf })
+  .then(async r => ({ status: r.status, body: await r.json().catch(() => null) }));
+
+test('图片上传：店主上传 JPG/PNG 成功，可读取且带缓存头', async () => {
+  const r = await up(JPG, 'image/jpeg', OWNER);
+  assert.equal(r.status, 201, JSON.stringify(r.body)); assert.equal(r.body.mime, 'image/jpeg'); assert.match(r.body.url, /^\/api\/images\/[\w-]+$/);
+  const g = await fetch(base + r.body.url);
+  assert.equal(g.status, 200); assert.equal(g.headers.get('content-type'), 'image/jpeg');
+  assert.match(g.headers.get('cache-control'), /max-age=31536000/);
+  assert.ok(Buffer.from(await g.arrayBuffer()).equals(JPG));
+  const nm = await fetch(base + r.body.url, { headers: { 'if-none-match': g.headers.get('etag') } });
+  assert.equal(nm.status, 304);
+  // Content-Type 写错也以魔数为准
+  const p = await up(PNG1, 'application/octet-stream', OWNER);
+  assert.equal(p.status, 201); assert.equal(p.body.mime, 'image/png');
+  assert.equal((await fetch(base + '/api/images/doesnotexist123')).status, 404);
+});
+test('图片上传：非商家 / 员工被拒', async () => {
+  assert.equal((await up(JPG, 'image/jpeg')).status, 401);
+  const ct = await login(newPhone());
+  assert.equal((await up(JPG, 'image/jpeg', ct)).status, 401);   // 顾客令牌不能当商家令牌
+  const s = await up(JPG, 'image/jpeg', STAFF);
+  assert.equal(s.status, 403); assert.equal(s.body.error.code, 'OWNER_ONLY');
+});
+test('图片上传：格式不对 / 太大被拒', async () => {
+  const gif = Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(64)]);
+  const a = await up(gif, 'image/jpeg', OWNER);
+  assert.equal(a.status, 415); assert.equal(a.body.error.code, 'IMAGE_BAD_TYPE'); assert.match(a.body.error.message, /JPG/);
+  const b = await up(gif, 'image/gif', OWNER);
+  assert.equal(b.status, 415);
+  const txt = await up(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>'), 'image/svg+xml', OWNER);
+  assert.equal(txt.status, 415);
+  const big = Buffer.concat([Buffer.from([0xFF, 0xD8, 0xFF, 0xE0]), Buffer.alloc(2 * 1024 * 1024)]);
+  const c = await up(big, 'image/jpeg', OWNER);
+  assert.equal(c.status, 413); assert.equal(c.body.error.code, 'IMAGE_TOO_LARGE'); assert.match(c.body.error.message, /2MB/);
+});
+test('服务图片：新增/编辑服务带图片，顾客端返回封面；校验 ID 与数量；种子服务有默认图', async () => {
+  const shop0 = await api('GET', '/api/shop');
+  assert.ok(shop0.body.services.every(s => s.cover && s.images.length === 1), '种子服务应有默认配图');
+  const i1 = (await up(JPG, 'image/jpeg', OWNER)).body, i2 = (await up(PNG1, 'image/png', OWNER)).body;
+  const c = await api('POST', '/api/merchant/services', { name: '图片测试款', price: 128, duration: 60, images: [i1.id, i2.id] }, OWNER);
+  assert.equal(c.status, 200, JSON.stringify(c.body)); assert.equal(c.body.cover, i1.url); assert.equal(c.body.images.length, 2);
+  const shop = await api('GET', '/api/shop');
+  assert.equal(shop.body.services.find(s => s.id === c.body.id).cover, i1.url);
+  const e = await api('PUT', '/api/merchant/services/' + c.body.id, { images: [i2.id] }, OWNER);   // 更换封面 / 删除一张
+  assert.equal(e.body.cover, i2.url); assert.equal(e.body.images.length, 1);
+  assert.equal((await api('PUT', '/api/merchant/services/' + c.body.id, { images: ['nope12345678'] }, OWNER)).body.error.code, 'IMAGE_NOT_FOUND');
+  const many = await api('PUT', '/api/merchant/services/' + c.body.id, { images: [i1.id, i2.id, shop0.body.services[0].images[0].id, shop0.body.services[1].images[0].id] }, OWNER);
+  assert.equal(many.body.error.code, 'TOO_MANY_IMAGES');
+  const none = await api('PUT', '/api/merchant/services/' + c.body.id, { images: [] }, OWNER);
+  assert.equal(none.body.cover, null);
+  assert.equal((await api('PUT', '/api/merchant/services/' + c.body.id, { images: [i1.id] }, STAFF)).status, 403);
+  await api('DELETE', '/api/merchant/services/' + c.body.id, null, OWNER);
+});
+test('顾客端实时：商家改服务后公开 SSE 收到 service 事件（不含顾客数据）', async () => {
+  const ac = new AbortController();
+  const res = await fetch(base + '/api/stream', { signal: ac.signal });
+  const reader = res.body.getReader(); let buf = '';
+  const got = (async () => { while (!buf.includes('"service"')) { const { value, done } = await reader.read(); if (done) break; buf += Buffer.from(value).toString(); } return buf; })();
+  await new Promise(r => setTimeout(r, 100));
+  await api('PUT', '/api/merchant/services/1', { desc: '实时测试' }, OWNER);
+  const txt = await Promise.race([got, new Promise((_, j) => setTimeout(() => j(new Error('timeout')), 3000))]);
+  ac.abort();
+  assert.match(txt, /event: change\ndata: {"type":"service"}/);
+  const h = await api('GET', '/api/health');
+  assert.ok(h.body.version && 'commit' in h.body && h.body.features.includes('images'));
+});

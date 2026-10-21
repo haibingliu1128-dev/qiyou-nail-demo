@@ -2,12 +2,19 @@
 用法：先启动一个测试实例（或直接跑 npm run e2e，会自动用临时数据库起服务）
       BASE=http://localhost:3101 python test/e2e.py
 """
-import os, re, random, sys, time
+import os, re, random, sys, time, zlib, struct
 from playwright.sync_api import sync_playwright, expect
 BASE = os.environ.get('BASE', 'http://localhost:3101')
 CHROME = os.environ.get('CHROME', '/usr/bin/google-chrome')
 PHONE = '177' + ''.join(random.choice('0123456789') for _ in range(8))
 ok = lambda m: print('ok  ', m, flush=True)
+
+def big_png(w=2400, h=1800):
+    """生成一张大尺寸 PNG（模拟手机原图），用来验证前端压缩到 ≤1080px"""
+    row = bytes([0]) + bytes(sum(([(x * 255 // w), 120, 200 - (x * 120 // w)] for x in range(w)), []))
+    raw = b''.join(row for _ in range(h))
+    ch = lambda t, d: struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+    return b'\x89PNG\r\n\x1a\n' + ch(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + ch(b'IDAT', zlib.compress(raw, 6)) + ch(b'IEND', b'')
 
 def code_and_verify(c):
     c.click('[data-a=sms]')
@@ -99,6 +106,39 @@ with sync_playwright() as p:
     st = br.new_context().new_page(); st.goto(BASE + '/#merchant'); st.fill('#m-user', 'staff'); st.fill('#m-pass', 'staff2026'); st.click('[data-a=mLogin]')
     st.click('.abentry'); st.click('[data-a=abSet]'); st.click('[data-a=abStep][data-v="maxOpen.v|1"]')
     expect(st.locator('.toast')).to_contain_text('员工账号不能修改'); ok('员工账号不能修改规则')
+
+    # 服务图片：商家新增服务并上传图片（大图自动压缩）→ 顾客端无需刷新即看到封面
+    c3 = br.new_context(viewport={'width': 390, 'height': 844}, is_mobile=True, has_touch=True).new_page()
+    c3.on('pageerror', lambda e: errs.append(str(e)))
+    c3.goto(BASE + '/'); c3.wait_for_selector('.svc .thumb.img img'); c3.click('.tab:has-text("预约")'); c3.wait_for_selector('.svc')
+    assert c3.locator('.svc .thumb.img img').count() == c3.locator('.svc').count() >= 6
+    c3.wait_for_function("[...document.querySelectorAll('.svc .thumb.img img')].slice(0,3).every(i=>i.complete&&i.naturalWidth>0)"); ok('种子服务显示默认配图（懒加载）')
+    m.goto(BASE + '/'); m.goto(BASE + '/#merchant'); m.wait_for_selector('[data-a=goSvcEdit]'); m.click('[data-a=goSvcEdit]'); m.click('.add')
+    m.set_input_files('input[data-img=new]', files=[{'name': 'huge.jpg', 'mimeType': 'image/jpeg', 'buffer': b'\xff\xd8\xff\xe0' + bytes(11 * 1024 * 1024)}])
+    expect(m.locator('.abalert')).to_contain_text('超过 10MB'); m.click('.abalert [data-d="1"]'); ok('原图超过 10MB 友好提示')
+    m.fill('#s-name', 'E2E图片款'); m.fill('#s-price', '199'); m.fill('#s-desc', '带图片的新服务')
+    m.set_input_files('input[data-img=new]', files=[{'name': 'photo.png', 'mimeType': 'image/png', 'buffer': big_png()}])
+    expect(m.locator('#pk-imgs .itile img')).to_have_count(1, timeout=15000)
+    m.wait_for_function("document.querySelector('#pk-imgs .itile img').naturalWidth>0")
+    wh = m.evaluate("(()=>{const i=document.querySelector('#pk-imgs .itile img');return [i.naturalWidth,i.naturalHeight]})()")
+    assert max(wh) == 1080 and wh[0] / wh[1] == 4 / 3, wh; ok(f'前端压缩 2400×1800 → {wh[0]}×{wh[1]}，封面标记' )
+    expect(m.locator('#pk-imgs .icov')).to_have_text('封面')
+    m.set_input_files('input[data-img=new]', files=[{'name': 'p2.png', 'mimeType': 'image/png', 'buffer': big_png(600, 900)}])
+    expect(m.locator('#pk-imgs .itile img')).to_have_count(2, timeout=15000)
+    m.click('[data-a=svcSave]'); expect(m.locator('.toast')).to_contain_text('已新增服务')
+    expect(m.locator('.card.se:has-text("E2E图片款") .thumb.img img')).to_be_visible()
+    card = c3.locator('.svc:has-text("E2E图片款")')
+    expect(card).to_be_visible(timeout=8000)
+    c3.wait_for_function("(()=>{const i=[...document.querySelectorAll('.svc')].find(x=>x.textContent.includes('E2E图片款'));const im=i&&i.querySelector('.thumb.img img');return im&&im.complete&&im.naturalWidth>0})()")
+    ok('顾客端实时出现新服务及封面（无需刷新）')
+    card.click(); c3.click('.foot .btn'); expect(c3.locator('#gal img')).to_have_count(2); expect(c3.locator('#galn')).to_have_text('1/2')
+    c3.wait_for_function("document.querySelector('#gal img').naturalWidth>0"); ok('预约页图片轮播（2 张）')
+    # 编辑：第二张设为封面，再删除一张
+    m.locator('.card.se:has-text("E2E图片款") [data-a=svcEdit]').click(); expect(m.locator('#pk-imgs .itile')).to_have_count(2)
+    m.click('#pk-imgs [data-a=imgCover]'); m.locator('#pk-imgs [data-a=imgDel]').nth(1).click(); expect(m.locator('#pk-imgs .itile')).to_have_count(1)
+    m.click('[data-a=svcSave]'); expect(m.locator('.toast')).to_contain_text('已保存')
+    expect(c3.locator('#gal img')).to_have_count(1, timeout=8000); ok('商家更换封面/删除图片 → 顾客端实时更新')
+    m.locator('.card.se:has-text("E2E图片款") [data-a=svcDel]').click(); m.click('.dlg [data-d="1"]'); expect(m.locator('.toast')).to_contain_text('已下架')
 
     # 刷新/换设备：数据在服务器
     c2 = br.new_context(viewport={'width': 390, 'height': 844}).new_page(); c2.goto(BASE + '/'); c2.click('.tab:has-text("我的")')

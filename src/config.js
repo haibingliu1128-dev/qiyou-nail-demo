@@ -13,7 +13,21 @@ loadEnv(process.env.ENV_FILE || path.join(ROOT, '.env'));
 process.env.TZ = process.env.TZ || 'Asia/Shanghai'; // 门店本地时区；所有日期/时段按此计算
 const E = process.env;
 const bool = (v, d) => (v === undefined || v === '' ? d : /^(1|true|yes|on)$/i.test(v));
+function gitCommit() {   // Render 运行时自动注入 RENDER_GIT_COMMIT；本地读 .git
+  if (E.RENDER_GIT_COMMIT) return E.RENDER_GIT_COMMIT.slice(0, 7);
+  try {
+    const head = fs.readFileSync(path.join(ROOT, '.git', 'HEAD'), 'utf8').trim();
+    const ref = head.startsWith('ref: ') ? head.slice(5) : null;
+    if (!ref) return head.slice(0, 7);
+    const f = path.join(ROOT, '.git', ref);
+    if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8').trim().slice(0, 7);
+    const packed = fs.readFileSync(path.join(ROOT, '.git', 'packed-refs'), 'utf8').split('\n').find(l => l.endsWith(' ' + ref));
+    return packed ? packed.slice(0, 7) : null;
+  } catch { return null; }
+}
 const cfg = {
+  version: require('../package.json').version,
+  commit: gitCommit(),
   root: ROOT,
   env: E.NODE_ENV || 'development',
   port: +E.PORT || 3100,

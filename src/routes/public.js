@@ -2,11 +2,34 @@
 // 顾客端 API（公开 + 顾客令牌）
 const { AppError } = require('../lib/util');
 module.exports = async function (app) {
-  const { auth, booking, cfg, sms, repo } = app.ctx;
+  const { auth, booking, cfg, sms, repo, bus } = app.ctx;
   const bearer = req => (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || null;
   const customer = req => { const c = auth.resolve(bearer(req), 'customer'); if (!c) throw new AppError(401, 'NEED_LOGIN', '请先验证手机号'); return c; };
 
-  app.get('/health', async () => ({ ok: true, time: Date.now(), sms: cfg.smsProvider, pay: cfg.payProvider }));
+  app.get('/health', async () => ({ ok: true, time: Date.now(), version: cfg.version, commit: cfg.commit, features: ['images', 'light-theme'], sms: cfg.smsProvider, pay: cfg.payProvider }));
+  // 图片：ID 随机且内容不可变 → 长缓存；ETag 便于条件请求
+  app.get('/images/:id', async (req, reply) => {
+    const id = String(req.params.id);
+    if (!/^[A-Za-z0-9_-]{8,40}$/.test(id)) throw new AppError(404, 'NOT_FOUND', '图片不存在');
+    const etag = '"' + id + '"';
+    reply.header('Cache-Control', 'public, max-age=31536000, immutable').header('ETag', etag);
+    if (req.headers['if-none-match'] === etag) return reply.code(304).send();
+    const im = repo.getImage(id);
+    if (!im) { reply.header('Cache-Control', 'no-store'); throw new AppError(404, 'NOT_FOUND', '图片不存在'); }
+    return reply.type(im.mime).header('Content-Length', im.bytes).send(im.data);
+  });
+  // 顾客端实时更新（SSE）：只推送「服务/设置有变化」这类公开信号，不含任何顾客数据
+  const PUBLIC_EVENTS = new Set(['service', 'settings', 'reset', 'shop']);
+  app.get('/stream', (req, reply) => {
+    reply.hijack();
+    const res = reply.raw;
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+    res.write('retry: 5000\n\n');
+    const send = e => { if (PUBLIC_EVENTS.has(e.type)) res.write(`event: change\ndata: ${JSON.stringify({ type: e.type })}\n\n`); };
+    const hb = setInterval(() => res.write(': ping\n\n'), 20000);
+    bus.on('change', send);
+    req.raw.on('close', () => { clearInterval(hb); bus.off('change', send); });
+  });
   app.get('/shop', async () => ({ ...booking.publicInfo(), demo: { showSmsCode: cfg.devShowSmsCode, mockPay: cfg.payProvider === 'mock', notice: cfg.demoNotice || '' } }));
   app.get('/availability', async req => booking.availability(req.query.serviceId, req.query.from, req.query.days ? +req.query.days : undefined));
 

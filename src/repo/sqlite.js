@@ -26,12 +26,22 @@ function createRepo(db) {
     // ---- services ----
     listServices: (all) => q(`SELECT * FROM services ${all ? '' : 'WHERE active=1'} ORDER BY sort, id`).all(),
     getService: id => q('SELECT * FROM services WHERE id=?').get(id),
-    insertService: s => q(`INSERT INTO services (name,descr,price_cents,duration_min,icon,color,hot,active,sort,deposit_on,deposit_cents,created_at,updated_at)
-      VALUES (@name,@descr,@price_cents,@duration_min,@icon,@color,@hot,1,@sort,@deposit_on,@deposit_cents,@t,@t)`).run({ ...s, t: now() }).lastInsertRowid,
+    insertService: s => q(`INSERT INTO services (name,descr,price_cents,duration_min,icon,color,hot,active,sort,deposit_on,deposit_cents,images,created_at,updated_at)
+      VALUES (@name,@descr,@price_cents,@duration_min,@icon,@color,@hot,1,@sort,@deposit_on,@deposit_cents,@images,@t,@t)`).run({ images: '[]', ...s, t: now() }).lastInsertRowid,
     updateService: (id, f) => {
       const keys = Object.keys(f); if (!keys.length) return;
       q(`UPDATE services SET ${keys.map(k => `${k}=@${k}`).join(',')}, updated_at=@_t WHERE id=@_id`).run({ ...f, _t: now(), _id: id });
     },
+
+    // ---- images ----
+    // 存储实现：SQLite BLOB。换对象存储（COS/OSS）时，putImage 改为上传并记录 key，getImage 返回签名 URL 或代理流即可。
+    putImage: im => q(`INSERT INTO images (id,mime,bytes,data,owner_type,owner_id,seed,created_at) VALUES (@id,@mime,@bytes,@data,@owner_type,@owner_id,@seed,@t)`)
+      .run({ owner_type: null, owner_id: null, seed: 0, ...im, bytes: im.data.length, t: now() }),
+    getImage: id => q('SELECT id,mime,bytes,data,created_at FROM images WHERE id=?').get(String(id)),
+    imageMeta: ids => ids.length ? q(`SELECT id,mime,bytes,owner_type,owner_id FROM images WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids) : [],
+    /** 删除超过 olderThan 毫秒、且没有被任何服务（或其它引用表）使用的上传图片 */
+    purgeOrphanImages: olderThan => q(`DELETE FROM images WHERE seed=0 AND created_at < ? AND id NOT IN (SELECT j.value FROM services s, json_each(s.images) j)
+      ${R._extraImageRefs || ''}`).run(now() - olderThan).changes,
 
     // ---- customers ----
     getCustomerByPhone: p => q('SELECT * FROM customers WHERE phone=?').get(p),
@@ -128,7 +138,7 @@ function createRepo(db) {
 
     /** 演示重置：清空业务数据（保留商家账号） */
     wipeBusinessData: () => db.exec(`DELETE FROM payments; DELETE FROM customer_events; DELETE FROM bookings; DELETE FROM customers; DELETE FROM sms_codes;
-      DELETE FROM sessions WHERE kind='customer'; DELETE FROM services; DELETE FROM settings; DELETE FROM login_failures;`),
+      DELETE FROM sessions WHERE kind='customer'; DELETE FROM services; DELETE FROM images; DELETE FROM settings; DELETE FROM login_failures;`),
   };
   return R;
 }

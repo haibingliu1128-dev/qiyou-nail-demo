@@ -100,7 +100,9 @@ awaiting_payment / pending / confirmed ─顾客或商家取消→ cancelled（�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | /api/health | 健康检查 |
+| GET | /api/health | 健康检查（含 version / commit，可用来确认线上版本） |
+| GET | /api/images/:id | 读取图片（正确 Content-Type；ID 不可变 → `Cache-Control: public, max-age=31536000, immutable` + ETag） |
+| GET | /api/stream | 顾客端 SSE：服务/设置变化时推送（只含事件类型，不含顾客数据） |
 | GET | /api/shop | 门店信息、在售服务、当前规则文案 |
 | GET | /api/availability?serviceId=&from=&days= | 可约时段（含不可约原因） |
 | POST | /api/auth/sms `{phone}` | 发送验证码（开发模式返回 devCode） |
@@ -132,12 +134,25 @@ awaiting_payment / pending / confirmed ─顾客或商家取消→ cancelled（�
 | POST | /api/merchant/customers/:phone/clear | 解除爽约限制与频率锁 |
 | GET/PUT | /api/merchant/settings | 读取（含 schema 与范围）/ 部分更新（店主，服务端校验） |
 | POST | /api/merchant/settings/reset | 恢复默认（店主） |
-| GET/POST/PUT/DELETE | /api/merchant/services[/:id] | 服务管理、单项定金（店主；删除=下架） |
+| GET/POST/PUT/DELETE | /api/merchant/services[/:id] | 服务管理、单项定金、`images:[图片ID…]`（≤3 张，第一张为封面；店主；删除=下架） |
+| POST | /api/merchant/images | 上传图片（店主）。请求体为图片二进制，`Content-Type: image/jpeg\|png\|webp`；≤2MB；按文件头魔数校验真实格式；返回 `{id,url}` |
 | GET | /api/merchant/audit | 操作日志（店主） |
 | GET | /api/merchant/stream | SSE：新预约/状态变化实时推送 |
 | POST | /api/merchant/demo-reset | 重置演示数据（DEMO_MODE=1，店主） |
 
 错误统一为 `{ "error": { "code": "LIMIT_OPEN", "message": "每人最多同时保留 2 个未完成的预约（门店设置）…" } }`，消息里引用当前设置值。
+
+## 服务图片
+- 商家在「服务管理 → 新增/编辑服务」里选图（手机上可拍照或从相册选），最多 3 张，第一张为封面，可「设为封面 / 更换 / 删除」。
+- 前端用 canvas 压缩：最长边 ≤1080px、JPEG 质量 0.8（仍超 1.9MB 时降到 0.6）；原图超过 10MB 直接提示换图。
+- 服务端：仅店主可上传；只接受 JPG / PNG / WebP（看文件头，不信任 Content-Type）；压缩后 ≤2MB；超过 24 小时仍未被任何服务引用的上传图片由定时任务清理。
+- 存储：当前直接存在 SQLite 的 `images` 表（BLOB，迁移 `002_images.sql`），所以 Render 免费实例无需额外配置也能用（但同样会随重启重置）。
+  **换腾讯云 COS / 阿里云 OSS**：只需重写 `src/repo/sqlite.js` 里的 `putImage / getImage`（上传到对象存储并记录 key；读取时 302 到 CDN/签名 URL 或代理），业务代码和前端不用改。
+- 顾客端：服务列表显示封面（居中裁剪、懒加载），预约页顶部是可左右滑动的图片轮播；没有图片时显示插画占位。商家保存后，顾客页面通过 `/api/stream` 自动刷新。
+- 演示服务的默认配图在 `assets/seed-images/`，由 `scripts/gen_seed_images.py` 用 SVG 程序绘制后导出（无下载素材、无真人），首次启动写入数据库；老数据库升级到该迁移时会给演示服务补上默认图。
+
+## 始终浅色显示
+页面声明了 `<meta name="color-scheme" content="light only">` 和 CSS `color-scheme: light only`，并显式设置了 html/body/表单控件的前景和背景色。这样手机系统开启深色模式（包括 Chrome 安卓的「网页自动深色」）时不会把页面强制变暗，始终按设计的浅色主题显示。
 
 ## 部署到腾讯云 / 阿里云（单台云服务器）
 1. 买一台 1 核 2G 的轻量服务器（Ubuntu 22.04/24.04）；**中国大陆服务器 + 域名必须先完成 ICP 备案**才能用 80/443 对外提供网站（香港/海外服务器不需要备案，但国内访问速度和微信内打开体验可能较差）。

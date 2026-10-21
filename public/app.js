@@ -71,6 +71,11 @@ var ART={
 };
 var PALETTE=[['#E86F8A','#FDECEF'],['#F29C6B','#FEF1E8'],['#8C7CF0','#F0EEFE'],['#3DB39E','#E7F6F2'],['#5AA2E8','#EAF3FD'],['#E0A93B','#FCF4E3']];
 function art(s,size){var p=PALETTE[s.color%PALETTE.length];var f=ART[s.icon]||ART.polish;return '<div class="thumb" style="background:'+p[1]+'">'+f(p[0])+'</div>'}
+/* 服务封面：有图用图（懒加载、居中裁剪），没图用插画占位 */
+function thumb(s){return s.cover?'<div class="thumb img"><img src="'+esc(s.cover)+'" alt="'+esc(s.name)+'" loading="lazy" decoding="async"></div>':art(s)}
+function gallery(s){var p=PALETTE[s.color%PALETTE.length],ims=s.images||[];
+  if(!ims.length)return '<div class="gal ph" style="background:'+p[1]+'">'+(ART[s.icon]||ART.polish)(p[0])+'<span>商家暂未上传图片</span></div>';
+  return '<div class="galw"><div class="gal" id="gal">'+ims.map(function(im,i){return '<img src="'+esc(im.url)+'" alt="'+esc(s.name)+' 图片'+(i+1)+'" loading="'+(i?'lazy':'eager')+'" decoding="async">'}).join('')+'</div>'+(ims.length>1?'<span class="galn" id="galn">1/'+ims.length+'</span>':'')+'</div>'}
 
 
 /* ---------- 数据缓存 ---------- */
@@ -125,7 +130,7 @@ V.home=function(){
   C.services.slice(0,4).map(function(s){return svcCard(s,'quickBook')}).join('')+
   '<div class="demo-strip">演示作品：店铺名称、地址、预约数据均为虚构示例；短信验证码与定金支付均为模拟。</div></div>'}};
 function svcCard(s,mode){var on=S.sel.serviceId===s.id&&mode==='pick';
-  return '<button class="svc'+(on?' on':'')+'" data-a="'+mode+'" data-v="'+s.id+'">'+(s.hot?'<span class="hot">人气</span>':'')+art(s)+
+  return '<button class="svc'+(on?' on':'')+'" data-a="'+mode+'" data-v="'+s.id+'">'+(s.hot?'<span class="hot">人气</span>':'')+thumb(s)+
   '<div class="info"><b>'+esc(s.name)+'</b><div class="d">'+esc(s.desc||'')+'</div><div class="meta"><span class="price">'+s.price+'</span><span class="chip">'+I.clock.replace('<svg','<svg width="11" height="11"')+durText(s.duration)+'</span>'+(s.deposit?'<span class="chip" style="color:#C9761A">定金¥'+s.deposit+'</span>':'')+'</div></div>'+
   (mode==='pick'?'<span class="pick">'+(on?I.check:'')+'</span>':'<span class="go">预约</span>')+'</button>'}
 V.book=function(){var s=S.sel.serviceId&&svcById(S.sel.serviceId);
@@ -133,7 +138,7 @@ V.book=function(){var s=S.sel.serviceId&&svcById(S.sel.serviceId);
     (C.services.length?C.services.map(function(x){return svcCard(x,'pick')}).join(''):'<div class="empty">商家暂未上架服务</div>')+'</div>',
     foot:'<div class="foot"><div class="sum">'+(s?'已选：'+esc(s.name)+'<br><b class="price">'+s.price+'</b>':'请选择一项服务')+'</div><button class="btn" data-a="toTime"'+(s?'':' disabled')+'>下一步</button></div>'}};
 V.time=function(){var s=svcById(S.sel.serviceId);if(!s)return V.book();
-  var html=steps(2)+'<div class="pad"><div class="card" style="display:flex;align-items:center;gap:10px;padding:10px 12px"><div class="se" style="flex:1">'+art(s)+'<div class="b"><b>'+esc(s.name)+'</b><span class="muted" style="font-size:12px">时长约 '+durText(s.duration)+'</span></div></div><span class="price">'+s.price+'</span></div>';
+  var html=steps(2)+'<div class="pad">'+gallery(s)+'<div class="card" style="display:flex;align-items:center;gap:10px;padding:10px 12px"><div class="se" style="flex:1">'+thumb(s)+'<div class="b"><b>'+esc(s.name)+'</b><span class="muted" style="font-size:12px">时长约 '+durText(s.duration)+'</span></div></div><span class="price">'+s.price+'</span></div>';
   if(!AV||AV.serviceId!==s.id)return {nav:nav('选择时间',{back:true}),body:html+loading()+'</div>'};
   var days=AV.days;if(!S.sel.date||!days.some(function(d){return d.date===S.sel.date})){var f=days.filter(function(d){return d.free})[0]||days[0];S.sel.date=f&&f.date}
   var cur=days.filter(function(d){return d.date===S.sel.date})[0];
@@ -273,6 +278,9 @@ function mStream(){if(M.es||!M.token||!window.EventSource)return;
     clearTimeout(t);t=setTimeout(function(){if(isMView())mLoad(S.view)},300)});
   M.es.onerror=function(){if(!M.token){M.es.close();M.es=null}}}
 function mStop(){if(M.es){M.es.close();M.es=null}}
+/* 顾客端实时更新：商家改服务/图片/设置后，顾客页面自动刷新数据（公开事件，不含顾客信息） */
+var CES=null;function cStream(){if(CES||!window.EventSource)return;CES=new EventSource('/api/stream');var t=null;
+  CES.addEventListener('change',function(){clearTimeout(t);t=setTimeout(function(){loadShop().then(function(){if(!isMView()&&['home','book','time','confirm','info'].indexOf(S.view)>=0&&!app.querySelector('.mask'))render(false)},function(){})},250)})}
 setInterval(function(){if(isMView()&&M.token)mLoad(S.view);else if(S.view==='time'&&S.sel.serviceId)onEnter('time');else if(S.view==='mine'&&ME.token)onEnter('mine')},30000);
 var isOwner=function(){return M.user&&M.user.role==='owner'};
 V.mlogin=function(){return {nav:nav('商家登录',{back:S.stack.length>0}),body:'<div class="login"><div class="logo"><svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M4 9l1.5-5h13L20 9M4 9v11h16V9M4 9c0 1.7 1.3 3 3 3s3-1.3 3-3c0 1.7 1.3 3 3 3s3-1.3 3-3c0 1.7 1.3 3 2 3"/><path d="M10 20v-5h4v5"/></svg></div><h2>'+esc(C.shop?C.shop.name:'')+' · 商家后台</h2><div class="sub">管理预约、防占号规则与顾客</div>'+
@@ -336,20 +344,48 @@ function setPath(path,val){if(path.indexOf('svc.')===0){var s=svcDep(path);saveS
 V.audit=function(){var A=M.audit;return {nav:nav('操作日志',{back:true}),body:'<div class="pad">'+(!A?loading():A.length?A.map(function(a){var d=new Date(a.at);
   return '<div class="abitem"><div class="t"><b style="font-size:13px">'+esc(a.action)+'</b><span class="muted" style="font-size:11px">'+(d.getMonth()+1)+'/'+d.getDate()+' '+hm(a.at)+'</span></div><div class="s">'+esc(a.actor_type)+(a.actor_name?' · '+esc(a.actor_name):'')+(a.target?' · '+esc(a.target):'')+(a.detail?' · '+esc(JSON.stringify(a.detail)).slice(0,120):'')+'</div></div>'}).join(''):'<div class="empty">暂无记录</div>')+'</div>'}};
 V.svcedit=function(){return {nav:nav('服务管理',{back:true}),body:'<div class="pad"><div class="sec-t">在售服务<small>修改后顾客端实时生效</small></div>'+
-  C.services.map(function(s){return '<div class="card se">'+art(s)+'<div class="b"><b>'+esc(s.name)+'</b><span class="price">'+s.price+'</span> <span class="chip">'+durText(s.duration)+'</span></div><div class="ops"><button class="icbtn" data-a="svcEdit" data-v="'+s.id+'" aria-label="编辑">'+I.edit+'</button><button class="icbtn del" data-a="svcDel" data-v="'+s.id+'" aria-label="删除">'+I.trash+'</button></div></div>'}).join('')+
+  C.services.map(function(s){return '<div class="card se">'+thumb(s)+'<div class="b"><b>'+esc(s.name)+'</b><span class="price">'+s.price+'</span> <span class="chip">'+durText(s.duration)+'</span></div><div class="ops"><button class="icbtn" data-a="svcEdit" data-v="'+s.id+'" aria-label="编辑">'+I.edit+'</button><button class="icbtn del" data-a="svcDel" data-v="'+s.id+'" aria-label="删除">'+I.trash+'</button></div></div>'}).join('')+
   '<button class="add" data-a="svcEdit">'+I.plus+'新增服务</button></div>'}};
-function svcSheet(s){var isNew=!s;s=s||{name:'',desc:'',price:'',duration:60,icon:'polish',color:0};S.draft={id:s.id,icon:s.icon,color:s.color};
+function svcSheet(s){var isNew=!s;s=s||{name:'',desc:'',price:'',duration:60,icon:'polish',color:0,images:[]};S.draft={id:s.id,icon:s.icon,color:s.color,images:(s.images||[]).slice(),uploading:0};
   var durs=[30,45,60,90,120,150,180];
   sheet(isNew?'新增服务':'编辑服务','<div class="card" style="padding:2px 14px"><div class="field"><label>名称</label><input id="s-name" maxlength="14" placeholder="如：法式美甲" value="'+esc(s.name)+'"></div>'+
   '<div class="field"><label>价格(元)</label><input id="s-price" type="number" inputmode="numeric" min="0" placeholder="0" value="'+esc(s.price)+'"></div>'+
   '<div class="field"><label>时长</label><select id="s-dur">'+durs.map(function(d){return '<option value="'+d+'"'+(d===s.duration?' selected':'')+'>'+durText(d)+'</option>'}).join('')+'</select></div>'+
   '<div class="field"><label>简介</label><input id="s-desc" maxlength="24" placeholder="选填，一句话介绍" value="'+esc(s.desc)+'"></div></div>'+
-  '<div class="card"><div class="muted" style="font-size:12px">图标与配色</div><div class="picks" id="pk-icon"></div><div class="picks" id="pk-color" style="padding-top:0"></div></div>'+
-  '<div style="display:flex;gap:10px;margin-top:6px"><button class="btn gray" style="flex:1" data-a="closeSheet">取消</button><button class="btn" style="flex:1" data-a="svcSave">保存</button></div>');refreshPicks()}
+  '<div class="card"><div class="muted" style="font-size:12px">服务图片 <span style="color:var(--ink3)">· 第一张为封面，最多 3 张，可拍照或从相册选择</span></div><div class="imgs" id="pk-imgs"></div></div>'+
+  '<div class="card"><div class="muted" style="font-size:12px">图标与配色（没有图片时显示）</div><div class="picks" id="pk-icon"></div><div class="picks" id="pk-color" style="padding-top:0"></div></div>'+
+  '<div style="display:flex;gap:10px;margin-top:6px"><button class="btn gray" style="flex:1" data-a="closeSheet">取消</button><button class="btn" style="flex:1" data-a="svcSave">保存</button></div>');refreshPicks();refreshImgs()}
+var IMG_MAX=3,IMG_RAW_MAX=10*1024*1024,IMG_SIDE=1080;
+function fileInput(v){return '<input type="file" accept="image/*" data-img="'+v+'" aria-label="选择图片">'}
+function refreshImgs(){var el=document.getElementById('pk-imgs');if(!el)return;var d=S.draft;
+  el.innerHTML=d.images.map(function(im,i){return '<div class="itile"><img src="'+esc(im.url)+'" alt="服务图片'+(i+1)+'">'+
+    '<button class="ix" data-a="imgDel" data-v="'+i+'" aria-label="删除图片">'+I.close.replace('width="22" height="22"','width="14" height="14"')+'</button>'+
+    (i===0?'<span class="icov">封面</span>':'<button class="icov2" data-a="imgCover" data-v="'+i+'">设为封面</button>')+
+    '<label class="irep">更换'+fileInput(i)+'</label></div>'}).join('')+
+  (d.uploading?'<div class="itile up"><i class="spin"></i><span>压缩上传中…</span></div>':'')+
+  (d.images.length+d.uploading<IMG_MAX?'<label class="iadd">'+I.plus+'<span>添加图片</span>'+fileInput('new')+'</label>':'')}
+/* 前端压缩：最长边 ≤1080px，JPEG 0.8（超过 1.9MB 再降到 0.6）；原图 >10MB 直接提示 */
+function loadImg(file){
+  if(window.createImageBitmap)return createImageBitmap(file,{imageOrientation:'from-image'}).catch(function(){return viaImg(file)});
+  return viaImg(file)}
+function viaImg(file){return new Promise(function(res,rej){var u=URL.createObjectURL(file),im=new Image();im.onload=function(){res(im)};im.onerror=function(){URL.revokeObjectURL(u);rej({message:'无法读取这张图片，请换一张 JPG / PNG 图片'})};im.src=u})}
+function compressImg(file){return loadImg(file).then(function(im){var w=im.width,h=im.height,k=Math.min(1,IMG_SIDE/Math.max(w,h));
+  var cv=document.createElement('canvas');cv.width=Math.max(1,Math.round(w*k));cv.height=Math.max(1,Math.round(h*k));
+  var g=cv.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,cv.width,cv.height);g.drawImage(im,0,0,cv.width,cv.height);
+  var tb=function(q){return new Promise(function(r){cv.toBlob(r,'image/jpeg',q)})};
+  return tb(.8).then(function(b){return b&&b.size>1.9*1024*1024?tb(.6):b}).then(function(b){if(!b)throw {message:'图片处理失败，请重试'};return b})})}
+function uploadImg(blob,url){return fetch(url||'/api/merchant/images',{method:'POST',headers:{'Content-Type':blob.type||'image/jpeg',Authorization:'Bearer '+(url?ME.token:M.token)},body:blob}).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(j){if(r.ok)return j;throw (j&&j.error)||{message:'上传失败（'+r.status+'）'}})},function(){throw {message:'网络连接失败，图片未上传'}})}
+function pickImage(file,slot){var d=S.draft;if(!file||!d)return;
+  if(file.type&&!/^image\//.test(file.type)){toast('请选择图片文件');return}
+  if(file.size>IMG_RAW_MAX){alertBox('图片太大','这张图片超过 10MB，请换一张，或先在相册里编辑/裁剪后再上传。');return}
+  d.uploading++;refreshImgs();
+  compressImg(file).then(function(b){return uploadImg(b)}).then(function(r){var im={id:r.id,url:r.url};
+    if(slot==='new')d.images.push(im);else d.images[+slot]=im;toast('图片已上传，保存后生效')},fail).then(function(){d.uploading--;refreshImgs()})}
 function refreshPicks(){var c=S.draft.color;
   document.getElementById('pk-icon').innerHTML=Object.keys(ART).map(function(k){return '<button class="'+(k===S.draft.icon?'on':'')+'" data-a="pkIcon" data-v="'+k+'" style="background:'+PALETTE[c][1]+'">'+ART[k](PALETTE[c][0])+'</button>'}).join('');
   document.getElementById('pk-color').innerHTML=PALETTE.map(function(p,i){return '<button class="'+(i===c?'on':'')+'" data-a="pkColor" data-v="'+i+'" style="background:'+p[0]+';width:30px;height:30px;border-radius:50%"></button>'}).join('')}
-function saveSvc(){var b={name:document.getElementById('s-name').value.trim(),price:document.getElementById('s-price').value.trim(),duration:+document.getElementById('s-dur').value,desc:document.getElementById('s-desc').value.trim(),icon:S.draft.icon,color:S.draft.color};
+function saveSvc(){if(S.draft.uploading){toast('图片还在上传，请稍候');return}var b={images:S.draft.images.map(function(x){return x.id}),name:document.getElementById('s-name').value.trim(),price:document.getElementById('s-price').value.trim(),duration:+document.getElementById('s-dur').value,desc:document.getElementById('s-desc').value.trim(),icon:S.draft.icon,color:S.draft.color};
   if(!b.name){toast('请填写服务名称');return}if(b.price===''||isNaN(+b.price)){toast('请填写正确的价格');return}b.price=+b.price;
   api(S.draft.id?'PUT':'POST','/api/merchant/services'+(S.draft.id?'/'+S.draft.id:''),b,'m').then(function(){closeSheet();toast(S.draft.id?'已保存':'已新增服务');return loadShop()}).then(function(){render(false)},fail)}
 function mDoLogin(){var u=document.getElementById('m-user').value.trim(),p=document.getElementById('m-pass').value;S.muser=u;
@@ -372,6 +408,7 @@ function render(resetScroll){
   var m=app.querySelector('.main');
   if(r.nav&&r.nav.indexOf('trans')>0){m.addEventListener('scroll',function(){var n=app.querySelector('.nav');var y=m.scrollTop;n.style.background='rgba(255,255,255,'+Math.min(y/150,1)+')';n.style.color=y>110?'#1F2329':'#fff'})}
   if(!resetScroll){m.scrollTop=st;m.firstChild.style.animation='none'}
+  var gl=document.getElementById('gal'),gn=document.getElementById('galn');if(gl&&gn)gl.addEventListener('scroll',function(){gn.textContent=(Math.round(gl.scrollLeft/gl.clientWidth)+1)+'/'+gl.children.length},{passive:true});
   bindInputs()}
 function bindInputs(){var n=document.getElementById('f-name'),p=document.getElementById('f-phone'),no=document.getElementById('f-note');
   if(n)n.addEventListener('input',function(){S.sel.name=n.value});
@@ -443,10 +480,14 @@ app.addEventListener('click',function(e){
   case 'pkIcon': S.draft.icon=v;refreshPicks();break;
   case 'pkColor': S.draft.color=+v;refreshPicks();break;
   case 'svcSave': saveSvc();break;
+  case 'imgDel': S.draft.images.splice(+v,1);refreshImgs();break;
+  case 'imgCover': var mv=S.draft.images.splice(+v,1)[0];S.draft.images.unshift(mv);refreshImgs();toast('已设为封面，保存后生效');break;
   case 'svcDel': var sv0=svcById(v);dialog('下架服务','确定下架「'+esc(sv0.name)+'」？已有预约不受影响。','下架',function(){api('DELETE','/api/merchant/services/'+v,null,'m').then(function(){toast('已下架');return loadShop()}).then(function(){render(false)},fail)});break;
   }
 });
-app.addEventListener('change',function(e){var t=e.target,p=t.getAttribute&&t.getAttribute('data-abin');if(!p)return;var r=rg(p),v=String(t.value).trim();
+app.addEventListener('change',function(e){var t=e.target,slot=t.getAttribute&&t.getAttribute('data-img');
+  if(slot!=null&&slot!==''){var f=t.files&&t.files[0];t.value='';pickImage(f,slot);return}
+  var p=t.getAttribute&&t.getAttribute('data-abin');if(!p)return;var r=rg(p),v=String(t.value).trim();
   if(!/^\d+$/.test(v)||+v<r[0]||+v>r[1]||(+v-r[0])%r[2]){toast('请输入 '+r[0]+'–'+r[1]+' 之间'+(r[2]>1?' '+r[2]+' 的倍数':'的整数'));render(false);return}setPath(p,+v)});
 function dialogPhone(){var el=sheet('验证手机号','<div class="card" style="padding:2px 14px"><div class="field"><label>手机号</label><input id="lg-phone" type="tel" inputmode="numeric" maxlength="11" placeholder="11 位手机号"></div></div><button class="btn" style="width:100%;margin-top:8px" data-a="lgNext">下一步</button>');
   el.querySelector('[data-a=lgNext]').addEventListener('click',function(e){e.stopPropagation();var ph=document.getElementById('lg-phone').value.trim();if(!/^1[3-9]\d{9}$/.test(ph)){toast('请输入正确的 11 位手机号');return}
@@ -456,5 +497,5 @@ function dialogPhone(){var el=sheet('验证手机号','<div class="card" style="
 if(location.hash==='#merchant'){S.tab='mine';S.view=M.token?'merchant':'mlogin'}
 window.addEventListener('hashchange',function(){if(location.hash==='#merchant'){S.tab='mine';S.stack=[];S.view=M.token?'merchant':'mlogin';render(true);onEnter(S.view)}});
 render(true);
-loadShop().then(function(){render(false);onEnter(S.view)},function(e){app.querySelector('.main').innerHTML='<div class="empty" style="padding:60px 20px">'+esc(e.message)+'<br><button class="btn sm" onclick="location.reload()">重试</button></div>'});
+loadShop().then(function(){render(false);onEnter(S.view);cStream()},function(e){app.querySelector('.main').innerHTML='<div class="empty" style="padding:60px 20px">'+esc(e.message)+'<br><button class="btn sm" onclick="location.reload()">重试</button></div>'});
 })();

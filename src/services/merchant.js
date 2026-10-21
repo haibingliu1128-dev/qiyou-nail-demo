@@ -72,6 +72,7 @@ function createMerchantService(ctx, B) {
     if (need('duration')) { const d = Number(b.duration); if (![30, 45, 60, 90, 120, 150, 180].includes(d)) throw new AppError(400, 'BAD_INPUT', '时长不合法'); f.duration_min = d; }
     if (b.icon !== undefined) f.icon = String(b.icon).slice(0, 12);
     if (b.color !== undefined) f.color = Math.max(0, Math.min(5, +b.color || 0));
+    if (b.images !== undefined) f.images = JSON.stringify(ctx.images.checkIds(b.images, 3, '服务图片'));
     if (b.depositOn !== undefined) f.deposit_on = b.depositOn ? 1 : 0;
     if (b.deposit !== undefined) {
       const [mn, mx, st] = Rules.DEP_RANGE, v = Number(b.deposit);

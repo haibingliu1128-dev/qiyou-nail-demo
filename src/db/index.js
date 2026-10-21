@@ -14,6 +14,7 @@ function open(file) {
 function migrate(db) {
   db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at INTEGER)');
   const done = new Set(db.prepare('SELECT version FROM schema_migrations').all().map(r => r.version));
+  db.appliedNow = [];   // 本次启动新执行的迁移（seed 据此做一次性数据回填）
   const dir = path.join(__dirname, 'migrations');
   for (const f of fs.readdirSync(dir).filter(f => /^\d+_.*\.sql$/.test(f)).sort()) {
     if (done.has(f)) continue;
@@ -21,6 +22,7 @@ function migrate(db) {
       db.exec(fs.readFileSync(path.join(dir, f), 'utf8'));
       db.prepare('INSERT INTO schema_migrations VALUES (?, ?)').run(f, Date.now());
     })();
+    db.appliedNow.push(f);
   }
 }
 module.exports = { open, migrate };

@@ -73,9 +73,11 @@ function createBookingService(ctx) {
       policy: { verify: C.verify.on, cancelH: C.cancelH.on ? C.cancelH.v : 0, depositOn: C.deposit.on, graceMin: C.grace.on ? C.grace.v : 0 },
     };
   }
+  const imgs = s => { try { const a = JSON.parse(s.images || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
   function svcDto(s, C) {
     return { id: s.id, name: s.name, desc: s.descr, price: s.price_cents / 100, duration: s.duration_min, icon: s.icon, color: s.color, hot: !!s.hot,
-      deposit: C.deposit.on && s.deposit_on ? s.deposit_cents / 100 : 0, depositOn: !!s.deposit_on, depositAmount: s.deposit_cents / 100, active: !!s.active };
+      deposit: C.deposit.on && s.deposit_on ? s.deposit_cents / 100 : 0, depositOn: !!s.deposit_on, depositAmount: s.deposit_cents / 100, active: !!s.active,
+      images: imgs(s).map(id => ({ id, url: '/api/images/' + id })), cover: imgs(s).length ? '/api/images/' + imgs(s)[0] : null };
   }
   function availability(serviceId, from, days) {
     const shop = repo.getShop(), svc = repo.getService(+serviceId);
