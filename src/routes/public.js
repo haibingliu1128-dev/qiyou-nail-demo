@@ -6,7 +6,7 @@ module.exports = async function (app) {
   const bearer = req => (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || null;
   const customer = req => { const c = auth.resolve(bearer(req), 'customer'); if (!c) throw new AppError(401, 'NEED_LOGIN', '请先验证手机号'); return c; };
 
-  app.get('/health', async () => ({ ok: true, time: Date.now(), version: cfg.version, commit: cfg.commit, features: ['images', 'light-theme'], sms: cfg.smsProvider, pay: cfg.payProvider }));
+  app.get('/health', async () => ({ ok: true, time: Date.now(), version: cfg.version, commit: cfg.commit, features: ['images', 'light-theme', 'reviews', 'staff-perms'], sms: cfg.smsProvider, pay: cfg.payProvider }));
   // 图片：ID 随机且内容不可变 → 长缓存；ETag 便于条件请求
   app.get('/images/:id', async (req, reply) => {
     const id = String(req.params.id);
