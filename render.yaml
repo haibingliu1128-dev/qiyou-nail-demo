@@ -1,0 +1,38 @@
+# Render Blueprint：免费 Web Service（Node 原生运行时）
+# 免费实例无持久磁盘：SQLite 文件在重启/重新部署/休眠唤醒后会丢失，启动时自动重新建表并写入演示数据。
+services:
+  - type: web
+    name: qiyou-nail-demo
+    runtime: node
+    plan: free
+    region: singapore
+    branch: main
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NODE_ENV
+        value: production
+      - key: TZ
+        value: Asia/Shanghai
+      - key: DB_FILE
+        value: ./data/nail.db
+      - key: APP_SECRET
+        generateValue: true
+      - key: SMS_PROVIDER
+        value: mock
+      - key: PAY_PROVIDER
+        value: mock
+      - key: DEV_SHOW_SMS_CODE      # 公开演示：没有真实短信，页面显示「演示验证码」
+        value: "1"
+      - key: DEMO_MODE
+        value: "1"
+      - key: SMS_PER_IP_HOUR
+        value: "20"
+      - key: DEMO_NOTICE
+        value: 演示环境，数据为示例，每次重启会重置
+      - key: LOG_LEVEL
+        value: info

@@ -1,0 +1,12 @@
+node_modules/
+data/
+*.db
+*.db-wal
+*.db-shm
+logs/
+backups/
+.env
+.env.*
+!.env.example
+*.mp4
+.DS_Store
