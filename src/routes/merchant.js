@@ -14,7 +14,11 @@ module.exports = async function (app) {
   });
   app.post('/login', async req => { const b = req.body || {}; return auth.merchantLogin(b.username, b.password, req.ip); });
   app.post('/logout', async req => { auth.logout(tok(req)); return { ok: true }; });
-  app.get('/me', async req => ({ username: req.user.username, role: req.user.role, name: req.user.display_name }));
+  app.get('/me', async req => ({ id: req.user.id, username: req.user.username, role: req.user.role, name: req.user.display_name, perms: require('../services/perms').effective(req.user) }));
+  // 店员权限（仅店主）
+  app.get('/staff', async req => app.ctx.perms.list(req.user));
+  app.post('/staff', async (req, reply) => { const r = await app.ctx.perms.create(req.user, req.body || {}, req.ip); reply.code(201); return r; });
+  app.put('/staff/:id', async req => app.ctx.perms.update(req.user, req.params.id, req.body || {}, req.ip));
   app.get('/dashboard', async () => ({ ...merchant.dashboard(), inbox: app.ctx.reviews.counts() }));
   app.get('/bookings', async req => merchant.bookings(req.query.scope || 'today', req.query.date));
   for (const op of ['accept', 'reject', 'arrive', 'done', 'noshow', 'cancel'])
@@ -32,7 +36,7 @@ module.exports = async function (app) {
   app.delete('/services/:id', async req => merchant.deleteService(req.user, req.params.id, req.ip));
   // 上传图片（店主）：请求体为压缩后的图片二进制，返回 {id,url}；保存服务时把 id 放进 images 数组
   app.post('/images', async (req, reply) => {
-    if (req.user.role !== 'owner') throw new AppError(403, 'OWNER_ONLY', '仅店主可上传服务图片');
+    require('../services/perms').need(req.user, 'service.manage');
     const r = app.ctx.images.save(req.body, { type: 'merchant', id: req.user.id });
     repo.audit({ actor_type: 'merchant', actor_id: req.user.id, actor_name: req.user.username, action: 'image.upload', target: 'image:' + r.id, detail: { bytes: r.bytes, mime: r.mime }, ip: req.ip });
     reply.code(201); return r;

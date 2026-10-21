@@ -413,3 +413,16 @@ input::placeholder,textarea::placeholder{color:#C3C7CE}
 .card.bk .ops{flex-wrap:wrap;align-items:center}
 .card.bk .ops .btn{white-space:nowrap}
 .myrv{white-space:nowrap}
+
+/* 店员权限 */
+.permnote{margin:10px 0 20px;padding:10px 12px;border-radius:10px;background:#F6F7F9;color:var(--ink2);font-size:12px;text-align:center}
+.sec-t small.lock{margin-left:8px;font-size:11px;color:#C9761A;background:#FFF4D6;border-radius:8px;padding:0 6px}
+.staffcard .hd{display:flex;align-items:center;gap:8px}
+.staffcard .hd b{flex:1}
+.staffcard .stst{font-size:11px;color:var(--ink3)}
+.staffcard.off{opacity:.7}
+.abrow.perm span{display:flex;flex-direction:column;gap:1px}
+.abrow.perm span b{font-size:13px;font-weight:600}
+.abrow.perm span small{font-size:11px;color:var(--ink3)}
+.abtog[disabled]{opacity:.4;pointer-events:none}
+.rvreply small.by{margin-left:6px;color:var(--ink3);font-size:11px}

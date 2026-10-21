@@ -162,6 +162,9 @@ function createRepo(db) {
     // ---- merchant users / sessions ----
     getMerchantByUsername: u => q('SELECT * FROM merchant_users WHERE username=?').get(u),
     getMerchant: id => q('SELECT * FROM merchant_users WHERE id=?').get(id),
+    listMerchants: () => q('SELECT * FROM merchant_users ORDER BY id').all(),
+    updateMerchant: (id, f) => { const keys = Object.keys(f); if (!keys.length) return; q(`UPDATE merchant_users SET ${keys.map(k => `${k}=@${k}`).join(',')} WHERE id=@_id`).run({ ...f, _id: id }); },
+    deleteSubjectSessions: (kind, id) => q('DELETE FROM sessions WHERE kind=? AND subject_id=?').run(kind, id).changes,
     insertMerchant: m => q(`INSERT INTO merchant_users (username,password_hash,role,display_name,active,created_at) VALUES (@username,@password_hash,@role,@display_name,1,@t)
       ON CONFLICT(username) DO UPDATE SET password_hash=@password_hash, role=@role, display_name=@display_name, active=1`).run({ ...m, t: now() }),
     insertSession: s => q('INSERT INTO sessions (token_hash,kind,subject_id,expires_at,created_at) VALUES (@token_hash,@kind,@subject_id,@expires_at,@t)').run({ ...s, t: now() }),

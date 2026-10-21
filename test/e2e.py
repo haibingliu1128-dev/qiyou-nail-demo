@@ -106,7 +106,7 @@ with sync_playwright() as p:
     # 员工账号只读
     st = br.new_context().new_page(); st.goto(BASE + '/#merchant'); st.fill('#m-user', 'staff'); st.fill('#m-pass', 'staff2026'); st.click('[data-a=mLogin]')
     st.click('.abentry'); st.click('[data-a=abSet]'); st.click('[data-a=abStep][data-v="maxOpen.v|1"]')
-    expect(st.locator('.toast')).to_contain_text('员工账号不能修改'); ok('员工账号不能修改规则')
+    expect(st.locator('.toast')).to_contain_text('店主未授权你「修改防占号规则」'); ok('店员未授权时不能修改规则')
 
     # 服务图片：商家新增服务并上传图片（大图自动压缩）→ 顾客端无需刷新即看到封面
     c3 = br.new_context(viewport={'width': 390, 'height': 844}, is_mobile=True, has_touch=True).new_page()
@@ -184,6 +184,25 @@ with sync_playwright() as p:
     c.click('.tab:has-text("首页")'); expect(c.locator('.rvcard')).to_have_count(0, timeout=8000)
     m.click('[data-a=abReset]'); m.click('.dlg [data-d="1"]'); expect(m.locator('.toast')).to_contain_text('恢复默认')
     expect(c.locator('.rvcard')).to_be_visible(timeout=8000); ok('关闭/恢复公开展示 → 首页评分卡实时隐藏/出现')
+
+    # 店员权限：店主授权「回复评价」→ 已登录的店员页面实时出现回复按钮 → 回复 → 收回后按钮实时消失；操作日志可查
+    sr = br.new_context(viewport={'width': 390, 'height': 844}, is_mobile=True, has_touch=True).new_page(); sr.on('pageerror', lambda e: errs.append(str(e)))
+    sr.goto(BASE + '/#merchant'); sr.fill('#m-user', 'staff'); sr.fill('#m-pass', 'staff2026'); sr.click('[data-a=mLogin]'); sr.wait_for_selector('.mhead')
+    expect(sr.locator('[data-a=goStaff]')).to_have_count(0); expect(sr.locator('[data-a=goSvcEdit]')).to_have_count(0)
+    sr.click('[data-a=goMReviews] >> nth=0'); sr.wait_for_selector('.mrv')
+    expect(sr.locator('[data-a=rvReply]')).to_have_count(0); expect(sr.locator('.permnote')).to_contain_text('店员权限'); ok('店员默认只能查看评价（无回复/隐藏按钮）')
+    m.goto(BASE + '/'); m.goto(BASE + '/#merchant'); m.wait_for_selector('.mhead'); m.click('[data-a=goStaff]'); m.wait_for_selector('.staffcard')
+    card = m.locator('.staffcard:has(small:text-is("@staff"))')
+    expect(m.locator('.staffcard')).to_have_count(2)
+    card.locator('[data-a=stPerm][data-v$="|review.reply"]').click(); expect(m.locator('.toast')).to_contain_text('已授权「回复评价」')
+    expect(sr.locator('[data-a=rvReply]').first).to_be_visible(timeout=8000); expect(sr.locator('[data-a=rvAct]')).to_have_count(0); ok('店主授权「回复评价」→ 店员页面实时出现回复按钮（隐藏仍不可用）')
+    sr.locator('.mrv:has([data-a=rvReply]:text-is("回复"))').first.locator('[data-a=rvReply]').click()
+    sr.fill('#rp-text', f'谢谢支持，期待再次光临（店员回复{TAG}）'); sr.click('[data-a=rpSave]'); expect(sr.locator('.toast')).to_contain_text('回复已发布')
+    expect(sr.locator(f'.mrv:has-text("店员回复{TAG}") .rvreply')).to_contain_text('美甲师（演示）'); ok('店员回复成功，显示回复人和时间')
+    card.locator('[data-a=stPerm][data-v$="|review.reply"]').click(); expect(m.locator('.toast')).to_contain_text('已收回')
+    expect(sr.locator('[data-a=rvReply]')).to_have_count(0, timeout=8000); ok('收回授权 → 店员按钮实时消失')
+    m.click('[data-a=back]'); m.click('[data-a=goAudit]'); m.click('[data-a=auF][data-v=staff]')
+    expect(m.locator('.abitem').first).to_contain_text('回复评价'); expect(m.locator('.abitem:has-text("回复评价")').first).to_contain_text('店员 美甲师（演示） @staff'); ok('操作日志「店员操作」显示谁回复了评价')
 
     # 刷新/换设备：数据在服务器
     c2 = br.new_context(viewport={'width': 390, 'height': 844}).new_page(); c2.goto(BASE + '/'); c2.click('.tab:has-text("我的")')

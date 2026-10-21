@@ -2,6 +2,9 @@
 // 商家后台业务：看板、预约列表、顾客/黑名单、防占号设置、服务管理、审计
 const U = require('../lib/util');
 const Rules = require('./rules');
+const Perm = require('./perms');
+// 评价与反馈相关开关：始终仅店主可改（不能授权给店员）
+const OWNER_KEYS = new Set(['review', 'reply', 'reviewPublic', 'feedback', 'contact']);
 const { AppError, today, toHm } = U;
 
 function createMerchantService(ctx, B) {
@@ -53,7 +56,9 @@ function createMerchantService(ctx, B) {
       services: repo.listServices(true).filter(s => s.active).map(s => ({ id: s.id, name: s.name, depositOn: !!s.deposit_on, deposit: s.deposit_cents / 100 })) };
   }
   function updateSettings(user, patch, ip) {
-    owner(user);
+    const keys = Object.keys(patch || {});
+    if (keys.some(k => OWNER_KEYS.has(k))) Perm.ownerOnly(user, '修改评价与反馈功能开关');
+    else Perm.need(user, 'rules.edit');
     const cur = B.settings();
     let nv; try { nv = Rules.validatePatch(cur, patch); } catch (e) { throw new AppError(400, 'BAD_SETTING', e.msg, { path: e.path }); }
     repo.tx(() => { for (const [k, v] of Object.entries(nv)) repo.putSetting(k, v); });
@@ -83,7 +88,7 @@ function createMerchantService(ctx, B) {
     return f;
   }
   function saveService(user, id, body, ip) {
-    owner(user);
+    Perm.need(user, 'service.manage');
     if (id) {
       const s = repo.getService(+id); if (!s || !s.active) throw new AppError(404, 'NOT_FOUND', '服务不存在');
       const f = cleanService(body, true); repo.updateService(s.id, f); audit(user, 'service.update', 'service:' + s.id, f, ip);
@@ -96,10 +101,12 @@ function createMerchantService(ctx, B) {
     return B.svcDto(repo.getService(+id), B.settings());
   }
   function deleteService(user, id, ip) {
-    owner(user); repo.updateService(+id, { active: 0 }); audit(user, 'service.delete', 'service:' + id, null, ip); bus.emit('change', { type: 'service' }); return { ok: true };
+    Perm.need(user, 'service.manage'); repo.updateService(+id, { active: 0 }); audit(user, 'service.delete', 'service:' + id, null, ip); bus.emit('change', { type: 'service' }); return { ok: true };
   }
   function noShows() { return repo.recentNoShows(20).map(b => B.dto(b, { merchant: true })); }
-  function auditLog(user) { owner(user); return repo.listAudit(150).map(a => ({ ...a, detail: a.detail ? JSON.parse(a.detail) : null })); }
+  function auditLog(user) { Perm.ownerOnly(user, '查看操作日志'); const us = new Map(repo.listMerchants().map(u => [u.id, u]));
+    return repo.listAudit(150).map(a => { const u = a.actor_type === 'merchant' && a.actor_id ? us.get(a.actor_id) : null;
+      return { ...a, actorDisplay: u ? u.display_name : null, actorRole: u ? u.role : null, detail: a.detail ? JSON.parse(a.detail) : null }; }); }
   return { dashboard, bookings, customers, setBlacklist, clearRestriction, getSettings, updateSettings, resetSettings, saveService, deleteService, noShows, auditLog };
 }
 module.exports = { createMerchantService };

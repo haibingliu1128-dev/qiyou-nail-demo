@@ -107,7 +107,7 @@ var app=document.getElementById('app');
 function go(view,push){if(push!==false)S.stack.push(S.view);S.view=view;render(true);onEnter(view)}
 function back(){S.view=S.stack.pop()||S.tab;render(true);onEnter(S.view)}
 function switchTab(t){S.tab=t;S.stack=[];S.view=t;render(true);onEnter(t)}
-function isMView(){return ['merchant','abm','abset','svcedit','audit','mreviews','mfeedback'].indexOf(S.view)>=0}
+function isMView(){return ['merchant','abm','abset','svcedit','audit','mreviews','mfeedback','mstaff'].indexOf(S.view)>=0}
 /* 进入页面时拉取数据 */
 function onEnter(v){
   if(v==='time'&&S.sel.serviceId){loadAvail(S.sel.serviceId).then(function(){if(S.view==='time')render(false)},fail);
@@ -335,12 +335,14 @@ function submit(){var s=svcById(S.sel.serviceId);if(!s){toast('该服务已下�
 
 /* ---------- 商家端 ---------- */
 function mLoad(v){if(!M.token)return;var p;
-  if(v==='merchant')p=Promise.all([api('GET','/api/merchant/dashboard',null,'m'),api('GET','/api/merchant/bookings?scope='+S.mTab,null,'m'),M.user?null:api('GET','/api/merchant/me',null,'m')]).then(function(r){M.dash=r[0];M.list=r[1];if(r[2])M.user=r[2]});
+  if(v==='merchant')p=Promise.all([api('GET','/api/merchant/dashboard',null,'m'),api('GET','/api/merchant/bookings?scope='+S.mTab,null,'m'),api('GET','/api/merchant/me',null,'m')]).then(function(r){M.dash=r[0];M.list=r[1];M.user=r[2]});
+  else if(v==='mstaff')p=api('GET','/api/merchant/staff',null,'m').then(function(r){M.staff=r});
   else if(v==='abm')p=Promise.all([api('GET','/api/merchant/dashboard',null,'m'),api('GET','/api/merchant/bookings?scope=pending',null,'m'),api('GET','/api/merchant/bookings?scope=today',null,'m'),api('GET','/api/merchant/noshows',null,'m'),api('GET','/api/merchant/customers',null,'m'),api('GET','/api/merchant/settings',null,'m')]).then(function(r){M.dash=r[0];M.pend=r[1];M.today=r[2];M.noshows=r[3];M.customers=r[4];M.settings=r[5]});
   else if(v==='abset')p=api('GET','/api/merchant/settings',null,'m').then(function(r){M.settings=r});
   else if(v==='svcedit')p=loadShop();
   else if(v==='audit')p=api('GET','/api/merchant/audit',null,'m').then(function(r){M.audit=r});
-  else if(v==='mreviews')p=api('GET','/api/merchant/reviews?filter='+S.rvF,null,'m').then(function(r){M.rv=r});
+  if(v!=='merchant'&&!M.user)api('GET','/api/merchant/me',null,'m').then(function(u){M.user=u;if(S.view===v)render(false)},function(){});
+  if(v==='mreviews')p=api('GET','/api/merchant/reviews?filter='+S.rvF,null,'m').then(function(r){M.rv=r});
   else if(v==='mfeedback')p=api('GET','/api/merchant/feedback?status='+S.fbF,null,'m').then(function(r){M.fb=r});
   if(p)p.then(function(){if(S.view===v)render(false)},fail);
   mStream()}
@@ -350,6 +352,7 @@ function mStream(){if(M.es||!M.token||!window.EventSource)return;
     if(d.type==='booking.create'&&isMView())toast('有新的预约');
     if(d.type==='review'&&d.low&&isMView())lowAlert();
     if(d.type==='feedback'&&d.isNew&&isMView())toast('收到新的意见反馈');
+    if(d.type==='perms'&&M.user&&d.userId===M.user.id){api('GET','/api/merchant/me',null,'m').then(function(u){M.user=u;toast('店主已更新你的权限，立即生效');if(isMView())render(false)},function(){})}
     clearTimeout(t);t=setTimeout(function(){if(isMView())mLoad(S.view)},300)});
   M.es.onerror=function(){if(!M.token){M.es.close();M.es=null}}}
 function lowAlert(){var el=document.createElement('div');el.className='mask center abalert';
@@ -367,19 +370,24 @@ var CES=null;function cStream(){if(CES||!window.EventSource)return;CES=new Event
       return p.then(function(){if(['home','book','time','confirm','info','reviews','mine','feedback'].indexOf(v)>=0&&S.view===v&&!busy()){render(false);bindFbImgs()}})},function(){})},250)})}
 setInterval(function(){if(isMView()&&M.token)mLoad(S.view);else if(S.view==='time'&&S.sel.serviceId)onEnter('time');else if(S.view==='mine'&&ME.token)onEnter('mine')},30000);
 var isOwner=function(){return M.user&&M.user.role==='owner'};
+/* 权限：店主全部允许；店员看店主授权（服务端每个请求都会再校验） */
+function can(k){return isOwner()||!!(M.user&&M.user.perms&&M.user.perms[k])}
+var OWNER_KEYS=['review','reply','reviewPublic','feedback','contact'];
+function noPerm(label){toast('店主未授权你「'+label+'」，请联系店主开通')}
 V.mlogin=function(){return {nav:nav('商家登录',{back:S.stack.length>0}),body:'<div class="login"><div class="logo"><svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M4 9l1.5-5h13L20 9M4 9v11h16V9M4 9c0 1.7 1.3 3 3 3s3-1.3 3-3c0 1.7 1.3 3 3 3s3-1.3 3-3c0 1.7 1.3 3 2 3"/><path d="M10 20v-5h4v5"/></svg></div><h2>'+esc(C.shop?C.shop.name:'')+' · 商家后台</h2><div class="sub">管理预约、防占号规则与顾客</div>'+
   '<div class="card" style="padding:2px 14px;text-align:left;margin-top:14px"><div class="field"><label>账号</label><input id="m-user" autocomplete="username" placeholder="用户名" value="'+esc(S.muser||'')+'"></div><div class="field"><label>密码</label><input id="m-pass" type="password" autocomplete="current-password" placeholder="密码"></div></div>'+
-  '<div class="hint">演示账号：<b>owner</b> / <b>qiyou2026</b>（店主）<br><b>staff</b> / <b>staff2026</b>（员工，不能改设置）</div><button class="btn dark" data-a="mLogin">登录</button></div>'}};
+  '<div class="hint">演示账号：<b>owner</b> / <b>qiyou2026</b>（店主）<br><b>staff</b> 或 <b>staff2</b> / <b>staff2026</b>（店员，权限由店主授权）</div><button class="btn dark" data-a="mLogin">登录</button></div>'}};
 function wk(i){return '日一二三四五六'[parseYmd(i).getDay()]}
 V.merchant=function(){var d=M.dash,L=M.list;if(!d||!L)return {nav:nav('商家后台',{back:S.stack.length>0}),body:loading()};
   var mx=Math.max.apply(null,d.week.map(function(x){return x.amount}).concat([1])),rev=d.week.reduce(function(a,x){return a+x.amount},0);
-  var body='<div class="mhead"><div class="r"><div><b>'+esc(C.shop.name)+'</b><br><small>'+dateLabel(today())+' · '+esc(M.user?M.user.name+'（'+(isOwner()?'店主':'员工')+'）':'')+'</small></div><button class="exit" data-a="mLogout">退出</button></div></div>'+
+  var body='<div class="mhead"><div class="r"><div><b>'+esc(C.shop.name)+'</b><br><small>'+dateLabel(today())+' · '+esc(M.user?M.user.name+'（'+(isOwner()?'店主':'店员')+'）':'')+'</small></div><button class="exit" data-a="mLogout">退出</button></div></div>'+
   '<div class="card stats"><div class="stat"><b>'+d.today+'</b><span>今日预约</span></div><div class="stat"><b>'+d.upcoming+'</b><span>待服务</span></div><div class="stat money"><b><span style="font-size:13px">¥</span>'+rev.toLocaleString()+'</b><span>本周营业额估算</span></div></div>'+
   (d.inbox&&d.inbox.reviews.lowNew?'<div class="pad" style="padding-bottom:0"><button class="lowbar" data-a="goMReviews" data-v="low">⚠ 有 '+d.inbox.reviews.lowNew+' 条新的低分评价（≤'+d.inbox.lowStar+'星），请及时查看并联系顾客 ›</button></div>':'')+
-  '<div class="pad" style="padding-top:0"><div class="mgrid">'+(isOwner()?'<button data-a="goSvcEdit"><span class="qi" style="background:#FDECEF;color:#E86F8A">'+I.edit+'</span><div><b>服务管理</b><span>'+C.services.length+' 项在售</span></div></button>':'')+
+  '<div class="pad" style="padding-top:0"><div class="mgrid">'+(can('service.manage')?'<button data-a="goSvcEdit"><span class="qi" style="background:#FDECEF;color:#E86F8A">'+I.edit+'</span><div><b>服务管理</b><span>'+C.services.length+' 项在售</span></div></button>':'')+
   '<button class="abentry" data-a="abGo"><span class="qi" style="background:#E7F7EE;color:#1E9E5A"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5" stroke-linecap="round"/></svg></span><div><b>防占号</b><span>'+(d.pending?d.pending+' 个待确认':'规则 · 爽约 · 黑名单')+'</span></div>'+(d.pending?'<em>'+d.pending+'</em>':'')+'</button>'+
   (d.inbox?'<button class="abentry" data-a="goMReviews" data-v="all"><span class="qi" style="background:#FFF4D6;color:#C9761A">'+I.star+'</span><div><b>评价管理</b><span>'+(d.inbox.reviews.unreplied?d.inbox.reviews.unreplied+' 条待回复':'共 '+d.inbox.reviews.total+' 条')+'</span></div>'+(d.inbox.reviews.lowNew?'<em>'+d.inbox.reviews.lowNew+'</em>':'')+'</button>'+
     '<button class="abentry" data-a="goMFeedback"><span class="qi" style="background:#F0EEFE;color:#8C7CF0">'+I.chat+'</span><div><b>意见反馈</b><span>'+((d.inbox.feedback.open||0)?d.inbox.feedback.open+' 条待处理':'暂无待处理')+'</span></div>'+(d.inbox.feedback.unseen?'<em>'+d.inbox.feedback.unseen+'</em>':'')+'</button>':'')+
+  (isOwner()?'<button data-a="goStaff"><span class="qi" style="background:#E7F6F2;color:#1E9E7A">'+I.user+'</span><div><b>店员权限</b><span>按账号授权</span></div></button>':'')+
   (isOwner()?'<button data-a="goAudit"><span class="qi" style="background:#EAF3FD;color:#5AA2E8">'+I.list+'</span><div><b>操作日志</b><span>谁在何时做了什么</span></div></button><button data-a="mReset"><span class="qi" style="background:#FEF1E8;color:#F29C6B">'+I.reset+'</span><div><b>重置演示</b><span>恢复示例数据</span></div></button>':'')+'</div>'+
   '<div class="card"><div class="sec-t" style="margin:0 0 4px;font-size:14px">本周营业额（估算）<small>按已确认/完成预约参考价合计</small></div><div class="bar7">'+d.week.map(function(x){return '<div class="'+(x.date===today()?'today':'')+'"><em>'+(x.amount||'')+'</em><i style="height:'+Math.round(x.amount/mx*60)+'px"></i><small>'+(x.date===today()?'今':wk(x.date))+'</small></div>'}).join('')+'</div></div>'+
   '<div class="mtabs">'+[['today','今日预约'],['upcoming','待服务'],['pending','待确认'],['all','全部记录']].map(function(x){return '<button class="'+(S.mTab===x[0]?'on':'')+'" data-a="mTab" data-v="'+x[0]+'">'+x[1]+'</button>'}).join('')+'</div>'+
@@ -412,8 +420,8 @@ function stp(path,label){var r=rg(path),v=path.indexOf('svc.')===0?svcDep(path).
 function svcDep(path){var id=+path.split('.')[1];return M.settings.services.filter(function(s){return s.id===id})[0]}
 V.abset=function(){if(!M.settings)return {nav:nav('防占号设置',{back:true}),body:loading()};
   var Cv=M.settings.values,ro=!isOwner();
-  var h='<div class="pad"><div class="abnote" style="margin-top:0">每项规则可单独开关、调整数值，<b>保存后立即对所有顾客生效</b>，顾客端提示会引用当前数值。'+(ro?'<b>当前为员工账号，仅可查看。</b>':'')+'</div>';
-  M.settings.schema.forEach(function(g){h+='<div class="sec-t" style="margin:14px 2px 8px;font-size:14px">'+esc(g.group)+'</div>';
+  var h='<div class="pad"><div class="abnote" style="margin-top:0">每项规则可单独开关、调整数值，<b>保存后立即对所有顾客生效</b>，顾客端提示会引用当前数值。'+(ro?(can('rules.edit')?'<b>店主已授权你修改防占号规则；评价与反馈开关、恢复默认、门店信息仅店主可改。</b>':'<b>当前为店员账号，仅可查看（修改需店主授权）。</b>'):'')+'</div>';
+  M.settings.schema.forEach(function(g){var lockG=g.group==='评价与反馈'?!isOwner():!can('rules.edit');h+='<div class="sec-t" style="margin:14px 2px 8px;font-size:14px">'+esc(g.group)+(lockG?'<small class="lock">仅'+(g.group==='评价与反馈'?'店主':'授权店员/店主')+'可改</small>':'')+'</div>';
     g.rules.forEach(function(r){var on=Cv[r.key].on,rows='';
       if(r.key==='rate')rows=stp('rate.m')+stp('rate.n')+stp('rate.lock');
       else if(r.key==='noshow')rows=stp('noshow.n')+stp('noshow.days','统计周期（近 N 天）')+'<div class="abrow"><span>处理方式</span><div class="abseg">'+[['block','禁止线上预约'],['deposit','必须付定金']].map(function(s){return '<button class="'+(Cv.noshow.act===s[0]?'on':'')+'" data-a="abAct" data-v="'+s[0]+'">'+s[1]+'</button>'}).join('')+'</div></div>'+stp('noshow.release','自动解除（最后一次爽约后）');
@@ -426,35 +434,51 @@ V.abset=function(){if(!M.settings)return {nav:nav('防占号设置',{back:true})
   h+='<div class="sec-t" style="margin:14px 2px 8px;font-size:14px">门店联系方式</div><div class="abrule"><div class="ds">用于「联系商家」按钮（拨打电话）和地址展示</div><div class="abadd"><input id="shop-phone" value="'+esc(M.settings.shop.phone)+'" placeholder="门店电话" inputmode="tel"></div><div class="abadd"><input id="shop-addr" value="'+esc(M.settings.shop.address)+'" maxlength="60" placeholder="门店地址"><button class="abb k" data-a="shopSave">保存</button></div></div>';
   h+='<button class="btn ghost" style="width:100%;margin:6px 0 24px" data-a="abReset">恢复默认</button></div>';
   return {nav:nav('防占号设置',{back:true}),body:h}};
-function saveRule(patch,msg){if(!isOwner()){toast('员工账号不能修改设置');return}
+function saveRule(patch,msg){var ks=Object.keys(patch);
+  if(ks.some(function(k){return OWNER_KEYS.indexOf(k)>=0})&&!isOwner()){toast('评价与反馈功能开关仅店主可修改');render(false);return}
+  if(!can('rules.edit')){noPerm('修改防占号规则');render(false);return}
   api('PUT','/api/merchant/settings',patch,'m').then(function(r){M.settings=r;render(false);toast(msg||'已保存，立即生效');loadShop()},function(e){fail(e);render(false)})}
-function saveSvcDep(id,f,msg){if(!isOwner()){toast('员工账号不能修改设置');return}
+function saveSvcDep(id,f,msg){if(!can('service.manage')){noPerm('管理服务与图片');return}
   api('PUT','/api/merchant/services/'+id,f,'m').then(function(){return api('GET','/api/merchant/settings',null,'m')}).then(function(r){M.settings=r;render(false);toast(msg);loadShop()},function(e){fail(e);render(false)})}
 function setPath(path,val){if(path.indexOf('svc.')===0){var s=svcDep(path);saveSvcDep(s.id,{deposit:val},'已保存：'+s.name+' 定金 ¥'+val);return}
   var p=path.split('.'),o={};o[p[0]]={};o[p[0]][p[1]]=val;var r=rg(path);saveRule(o,'已保存：'+val+' '+r[3])}
 S.rvF='all';S.fbF='open';
 var RV_STATUS={pending:'<span class="abtag pend">待审核</span>',hidden:'<span class="abtag ns">已隐藏</span>'};
-V.mreviews=function(){var R=M.rv;if(!R)return {nav:nav('评价管理',{back:true}),body:loading()};var c=R.counts,ro=!isOwner();
+V.mreviews=function(){var R=M.rv;if(!R)return {nav:nav('评价管理',{back:true}),body:loading()};var c=R.counts,cR=can('review.reply')&&R.features.reply,cH=can('review.hide'),cA=can('review.approve'),ro=!cR&&!cH&&!cA;
   var tabs=[['all','全部',c.total],['unreplied','待回复',c.unreplied],['low','差评≤'+R.lowStar+'星',c.low],['pending','待审核',c.pending],['hidden','已隐藏',c.hidden]];
   return {nav:nav('评价管理',{back:true}),body:'<div class="pad"><div class="card">'+rvSummary(R.summary)+'<div class="muted" style="font-size:11px;margin-top:6px">商家统计含隐藏/待审核评价；公开页只统计已公开的评价。</div></div>'+
-  '<div class="mtabs" style="padding:0 0 10px">'+tabs.map(function(t){return '<button class="'+(S.rvF===t[0]?'on':'')+'" data-a="rvF" data-v="'+t[0]+'">'+t[1]+(t[2]?' '+t[2]:'')+'</button>'}).join('')+'</div>'+
+  (ro&&!isOwner()?'<div class="permnote">你目前只能查看评价。回复、隐藏、审核需店主在「店员权限」中授权。</div>':'')+'<div class="mtabs" style="padding:0 0 10px">'+tabs.map(function(t){return '<button class="'+(S.rvF===t[0]?'on':'')+'" data-a="rvF" data-v="'+t[0]+'">'+t[1]+(t[2]?' '+t[2]:'')+'</button>'}).join('')+'</div>'+
   (R.items.length?R.items.map(function(r){return '<div class="card mrv'+(r.low?' low':'')+'"><div class="rvh">'+starsH(r.stars)+(r.low?'<span class="abtag blk">低分</span>':'')+(RV_STATUS[r.status]||'')+(r.seed?'<span class="demo-tag">示例</span>':'')+'<span class="when">'+dShort(r.createdAt)+'</span></div>'+
     '<div class="rvsvc">'+esc(r.serviceName)+' · '+md(r.date)+' '+r.time+' · 订单 '+esc(r.bookingCode)+' · '+esc(r.phone)+'</div>'+rvTags(r.tags)+(r.text?'<div class="rvtext">'+esc(r.text)+'</div>':'<div class="rvtext muted">（未填写文字）</div>')+photoRow(r.photos)+
-    (r.reply?'<div class="rvreply"><b>已回复：</b>'+esc(r.reply.text)+'</div>':'')+
-    (ro?'':'<div class="ops">'+(r.status==='pending'?'<button class="btn sm okb" data-a="rvAct" data-v="approve|'+r.id+'">通过审核</button>':'')+
-      '<button class="btn sm gray" data-a="rvAct" data-v="'+(r.status==='hidden'?'unhide':'hide')+'|'+r.id+'">'+(r.status==='hidden'?'取消隐藏':'隐藏')+'</button>'+
-      (R.features.reply?'<button class="btn sm" data-a="rvReply" data-v="'+r.id+'">'+(r.reply?'修改回复':'回复')+'</button>':'')+'</div>')+'</div>'}).join(''):emptyBox('暂无评价',false))+
-  (ro?'<div class="small" style="text-align:center;color:var(--ink3);font-size:12px">员工账号仅可查看</div>':'')+'</div>'}};
+    (r.reply?'<div class="rvreply"><b>已回复</b><small class="by">'+esc(r.reply.by||'')+' · '+dShort(r.reply.at)+' '+hm(r.reply.at)+'</small><br>'+esc(r.reply.text)+'</div>':'')+
+    (r.moderatedBy?'<div class="rvsvc">'+(r.status==='hidden'?'隐藏':'公开/审核')+'操作：'+esc(r.moderatedBy)+' · '+dShort(r.moderatedAt)+' '+hm(r.moderatedAt)+'</div>':'')+
+    (ro?'':'<div class="ops">'+(r.status==='pending'&&cA?'<button class="btn sm okb" data-a="rvAct" data-v="approve|'+r.id+'">通过审核</button>':'')+
+      (cH?'<button class="btn sm gray" data-a="rvAct" data-v="'+(r.status==='hidden'?'unhide':'hide')+'|'+r.id+'">'+(r.status==='hidden'?'取消隐藏':'隐藏')+'</button>':'')+
+      (cR?'<button class="btn sm" data-a="rvReply" data-v="'+r.id+'">'+(r.reply?'修改回复':'回复')+'</button>':'')+'</div>')+'</div>'}).join(''):emptyBox('暂无评价',false))+
+  '</div>'}};
 function rpSheet(r){S.rpId=r.id;sheet(r.reply?'修改回复':'回复评价','<div class="rvtext" style="margin-bottom:8px">'+starsH(r.stars)+' '+esc(r.text||'（未填写文字）')+'</div><textarea id="rp-text" class="ta" maxlength="300" placeholder="感谢顾客，或说明改进措施（最多 300 字，公开可见）">'+esc(r.reply?r.reply.text:'')+'</textarea><div class="cnt"><span id="rp-cnt">'+(r.reply?[...r.reply.text].length:0)+'</span>/300</div><button class="btn" style="width:100%;margin-top:10px" data-a="rpSave">发布回复</button>');bindInputs()}
 var FB_T=[['open','待处理'],['doing','处理中'],['done','已处理'],['','全部']];
-V.mfeedback=function(){var R=M.fb;if(!R)return {nav:nav('意见反馈',{back:true}),body:loading()};var ro=!isOwner();
+V.mfeedback=function(){var R=M.fb;if(!R)return {nav:nav('意见反馈',{back:true}),body:loading()};var ro=!can('feedback.handle');
   return {nav:nav('意见反馈',{back:true}),body:'<div class="pad"><div class="mtabs" style="padding:0 0 10px">'+FB_T.map(function(t){var n=t[0]==='open'?R.counts.open:t[0]==='doing'?R.counts.doing:0;return '<button class="'+(S.fbF===t[0]?'on':'')+'" data-a="fbF" data-v="'+t[0]+'">'+t[1]+(n?' '+n:'')+'</button>'}).join('')+'</div>'+
   (R.items.length?R.items.map(function(f){return '<div class="card mfb"><div class="h"><span class="abtag dep">'+esc(f.type)+'</span><span class="fbst '+f.status+'">'+f.statusText+'</span>'+(f.seed?'<span class="demo-tag">示例</span>':'')+'<small>'+dShort(f.createdAt)+' '+hm(f.createdAt)+'</small></div>'+
     '<div class="t">'+esc(f.text)+'</div>'+photoRow(f.photos)+'<div class="rvsvc">'+esc(f.name||'顾客')+' · '+esc(f.phone)+' · '+esc(f.contactText)+'</div>'+
-    (f.note?'<div class="rvreply"><b>内部备注：</b>'+esc(f.note)+'</div>':'')+
-    (ro?'':'<div class="ops">'+[['open','待处理'],['doing','处理中'],['done','已处理']].filter(function(x){return x[0]!==f.status}).map(function(x){return '<button class="btn sm '+(x[0]==='done'?'okb':'gray')+'" data-a="fbSt" data-v="'+x[0]+'|'+f.id+'">标为'+x[1]+'</button>'}).join('')+'<button class="btn sm ghost" data-a="fbNote" data-v="'+f.id+'">备注</button></div>')+'</div>'}).join(''):emptyBox('暂无反馈',false))+'</div>'}};
-V.audit=function(){var A=M.audit;return {nav:nav('操作日志',{back:true}),body:'<div class="pad">'+(!A?loading():A.length?A.map(function(a){var d=new Date(a.at);
-  return '<div class="abitem"><div class="t"><b style="font-size:13px">'+esc(a.action)+'</b><span class="muted" style="font-size:11px">'+(d.getMonth()+1)+'/'+d.getDate()+' '+hm(a.at)+'</span></div><div class="s">'+esc(a.actor_type)+(a.actor_name?' · '+esc(a.actor_name):'')+(a.target?' · '+esc(a.target):'')+(a.detail?' · '+esc(JSON.stringify(a.detail)).slice(0,120):'')+'</div></div>'}).join(''):'<div class="empty">暂无记录</div>')+'</div>'}};
+    (f.note?'<div class="rvreply"><b>内部备注：</b>'+esc(f.note)+'</div>':'')+(f.handledBy?'<div class="rvsvc">最后处理：'+esc(f.handledBy)+' · '+dShort(f.handledAt)+' '+hm(f.handledAt)+'</div>':'')+
+    (f.contact!=='none'&&f.phoneMasked&&!isOwner()?'<div class="rvsvc">完整号码需店主授权「查看顾客完整手机号」</div>':'')+
+    (ro?'':'<div class="ops">'+[['open','待处理'],['doing','处理中'],['done','已处理']].filter(function(x){return x[0]!==f.status}).map(function(x){return '<button class="btn sm '+(x[0]==='done'?'okb':'gray')+'" data-a="fbSt" data-v="'+x[0]+'|'+f.id+'">标为'+x[1]+'</button>'}).join('')+'<button class="btn sm ghost" data-a="fbNote" data-v="'+f.id+'">备注</button></div>')+'</div>'}).join(''):emptyBox('暂无反馈',false))+(ro?'<div class="permnote">你目前只能查看反馈。修改状态和内部备注需店主授权「处理意见反馈」。</div>':'')+'</div>'}};
+V.mstaff=function(){var R=M.staff;if(!R)return {nav:nav('店员权限',{back:true}),body:loading()};
+  return {nav:nav('店员权限',{back:true}),body:'<div class="pad"><div class="abnote" style="margin-top:0">按店员账号逐项授权，<b>默认全部关闭</b>；修改后对已登录的店员<b>立即生效</b>。「店员权限」本身和「评价与反馈功能开关」始终只有店主能改。</div>'+
+  (R.staff.length?R.staff.map(function(u){return '<div class="abrule staffcard'+(u.active?'':' off')+'" id="staff-'+u.id+'"><div class="hd"><b>'+esc(u.name)+' <small style="font-weight:400;color:var(--ink3)">@'+esc(u.username)+'</small></b><span class="stst">'+(u.active?'已启用':'已停用')+'</span><button class="abtog'+(u.active?' on':'')+'" data-a="stActive" data-v="'+u.id+'" role="switch" aria-checked="'+u.active+'" aria-label="启用账号 '+esc(u.name)+'"></button></div>'+
+    '<div class="rows">'+R.perms.map(function(p){var on=u.perms[p.key];return '<div class="abrow perm"><span><b>'+esc(p.label)+'</b><small>'+esc(p.desc)+'</small></span><button class="abtog'+(on?' on':'')+'" data-a="stPerm" data-v="'+u.id+'|'+p.key+'" role="switch" aria-checked="'+on+'" aria-label="'+esc(u.name)+' '+esc(p.label)+'"'+(u.active?'':' disabled')+'></button></div>'}).join('')+
+    '<div class="abrow"><span><small>'+R.perms.filter(function(p){return u.perms[p.key]}).length+' / '+R.perms.length+' 项已授权</small></span><button class="abb" data-a="stPwd" data-v="'+u.id+'">重置密码</button></div></div></div>'}).join(''):emptyBox('还没有店员账号',false))+
+  '<button class="add" data-a="stNew">'+I.plus+'新增店员账号</button><div class="small" style="text-align:center;color:var(--ink3);font-size:12px;margin:10px 0 20px">店员的回复/隐藏/处理记录可在「操作日志」查看</div></div>'}};
+function stUpdate(id,body,msg){api('PUT','/api/merchant/staff/'+id,body,'m').then(function(u){M.staff.staff=M.staff.staff.map(function(x){return x.id===u.id?u:x});render(false);toast(msg)},function(e){fail(e);mLoad('mstaff')})}
+var AUDIT_T={'review.reply':'回复评价','review.reply_edit':'修改回复','review.hide':'隐藏评价','review.unhide':'恢复公开评价','review.approve':'审核通过评价','feedback.update':'处理意见反馈','staff.update':'修改店员权限/账号','staff.create':'新增店员','service.create':'新增服务','service.update':'编辑服务','service.delete':'下架服务','image.upload':'上传图片','settings.update':'修改设置','settings.reset':'恢复默认设置','shop.update':'修改门店信息','login':'登录','login.fail':'登录失败','demo.reset':'重置演示数据','customer.blacklist':'拉黑顾客','customer.unblacklist':'移出黑名单','customer.clear_restriction':'解除限制'};
+S.auF='all';
+function auWho(a){if(a.actor_type==='merchant'){var r=a.actorRole==='owner'?'店主':a.actorRole==='staff'?'店员':'商家';return r+(a.actorDisplay?' '+esc(a.actorDisplay):'')+(a.actor_name?' @'+esc(a.actor_name):'')}
+  return ({customer:'顾客',system:'系统'}[a.actor_type]||esc(a.actor_type))+(a.actor_name?' · '+esc(a.actor_type==='customer'?String(a.actor_name).replace(/^(\d{3})\d{4}(\d{4})$/,'$1****$2'):a.actor_name):'')}
+V.audit=function(){var A=M.audit;if(A){var F0={all:function(){return true},rf:function(a){return /^(review|feedback)\./.test(a.action)},staff:function(a){return a.actor_name&&a.actor_name!=='owner'&&a.actor_type==='merchant'&&a.action!=='login.fail'}}[S.auF];A=A.filter(F0)}
+  return {nav:nav('操作日志',{back:true}),body:'<div class="pad"><div class="mtabs" style="padding:0 0 10px">'+[['all','全部'],['rf','评价与反馈'],['staff','店员操作']].map(function(t){return '<button class="'+(S.auF===t[0]?'on':'')+'" data-a="auF" data-v="'+t[0]+'">'+t[1]+'</button>'}).join('')+'</div>'+(!A?loading():A.length?A.map(function(a){var d=new Date(a.at);
+  return '<div class="abitem"><div class="t"><b style="font-size:13px">'+esc(AUDIT_T[a.action]||a.action)+'</b><span class="muted" style="font-size:11px">'+(d.getMonth()+1)+'/'+d.getDate()+' '+hm(a.at)+'</span></div><div class="s">'+auWho(a)+(a.target?' · '+esc(a.target):'')+(a.detail?' · '+esc(JSON.stringify(a.detail)).slice(0,120):'')+'</div></div>'}).join(''):'<div class="empty">暂无记录</div>')+'</div>'}};
 V.svcedit=function(){return {nav:nav('服务管理',{back:true}),body:'<div class="pad"><div class="sec-t">在售服务<small>修改后顾客端实时生效</small></div>'+
   C.services.map(function(s){return '<div class="card se">'+thumb(s)+'<div class="b"><b>'+esc(s.name)+'</b><span class="price">'+s.price+'</span> <span class="chip">'+durText(s.duration)+'</span></div><div class="ops"><button class="icbtn" data-a="svcEdit" data-v="'+s.id+'" aria-label="编辑">'+I.edit+'</button><button class="icbtn del" data-a="svcDel" data-v="'+s.id+'" aria-label="删除">'+I.trash+'</button></div></div>'}).join('')+
   '<button class="add" data-a="svcEdit">'+I.plus+'新增服务</button></div>'}};
@@ -502,7 +526,7 @@ function saveSvc(){if(S.imgctx&&S.imgctx.uploading){toast('图片还在上传，
   api(S.draft.id?'PUT':'POST','/api/merchant/services'+(S.draft.id?'/'+S.draft.id:''),b,'m').then(function(){closeSheet();toast(S.draft.id?'已保存':'已新增服务');return loadShop()}).then(function(){render(false)},fail)}
 function mDoLogin(){var u=document.getElementById('m-user').value.trim(),p=document.getElementById('m-pass').value;S.muser=u;
   if(!u||!p){toast('请输入账号和密码');return}
-  api('POST','/api/merchant/login',{username:u,password:p}).then(function(r){M.token=r.token;M.user=r.user;sessionStorage.setItem(MT,r.token);S.view='merchant';render(true);onEnter('merchant');toast('登录成功')},fail)}
+  api('POST','/api/merchant/login',{username:u,password:p}).then(function(r){M.token=r.token;M.user=null;sessionStorage.setItem(MT,r.token);S.view='merchant';render(true);onEnter('merchant');toast('登录成功')},fail)}
 
 /* ---------- 通用 ---------- */
 function dialog(title,msg,okText,onOk){var el=document.createElement('div');el.className='mask center';
@@ -599,20 +623,30 @@ app.addEventListener('click',function(e){
   case 'abSvcTog': var sd=svcDep('svc.'+v);saveSvcDep(sd.id,{depositOn:!sd.depositOn},(sd.depositOn?'已关闭':'已开启')+'「'+sd.name+'」定金');break;
   case 'abStep': var sp=v.split('|'),r=rg(sp[0]),cur=sp[0].indexOf('svc.')===0?svcDep(sp[0]).deposit:sv(sp[0]),x=cur+(+sp[1])*r[2];
     if(x<r[0]||x>r[1]){toast('可设置范围 '+r[0]+'–'+r[1]+' '+r[3]);break}setPath(sp[0],x);break;
-  case 'abReset': if(!isOwner()){toast('员工账号不能修改设置');break}dialog('恢复默认','所有防占号规则恢复为默认值，顾客爽约记录和黑名单不受影响。','恢复',function(){api('POST','/api/merchant/settings/reset',null,'m').then(function(r){M.settings=r;render(false);toast('已恢复默认设置');loadShop()},fail)});break;
+  case 'abReset': if(!isOwner()){toast('恢复默认仅店主可操作');break}dialog('恢复默认','所有防占号规则恢复为默认值，顾客爽约记录和黑名单不受影响。','恢复',function(){api('POST','/api/merchant/settings/reset',null,'m').then(function(r){M.settings=r;render(false);toast('已恢复默认设置');loadShop()},fail)});break;
   case 'svcEdit': svcSheet(v?svcById(v):null);break;
   case 'pkIcon': S.draft.icon=v;refreshPicks();break;
   case 'pkColor': S.draft.color=+v;refreshPicks();break;
   case 'svcSave': saveSvc();break;
+  case 'goStaff': M.staff=null;go('mstaff');break;
+  case 'auF': S.auF=v;render(false);break;
+  case 'stPerm': var sp2=v.split('|'),su=M.staff.staff.filter(function(x){return x.id===+sp2[0]})[0],pl=M.staff.perms.filter(function(p){return p.key===sp2[1]})[0],po={};po[sp2[1]]=!su.perms[sp2[1]];
+    stUpdate(su.id,{perms:po},(po[sp2[1]]?'已授权':'已收回')+'「'+pl.label+'」· '+su.name+'，立即生效');break;
+  case 'stActive': var sa=M.staff.staff.filter(function(x){return x.id===+v})[0];
+    (sa.active?function(f){dialog('停用账号','停用后「'+esc(sa.name)+'」将立即退出登录且无法再登录，可随时重新启用。','停用',f)}:function(f){f()})(function(){stUpdate(sa.id,{active:!sa.active},sa.active?'已停用并下线':'已启用')});break;
+  case 'stPwd': S.stId=+v;sheet('重置密码','<div class="card" style="padding:2px 14px"><div class="field"><label>新密码</label><input id="st-pwd" type="password" autocomplete="new-password" placeholder="6–64 位"></div></div><div class="muted" style="font-size:12px;margin:6px 2px">重置后该店员需用新密码重新登录</div><button class="btn" style="width:100%;margin-top:8px" data-a="stPwdSave">保存</button>');break;
+  case 'stPwdSave': var npw=document.getElementById('st-pwd').value;if(npw.length<6){toast('密码至少 6 位');break}closeSheet();stUpdate(S.stId,{password:npw},'密码已重置，该店员需重新登录');break;
+  case 'stNew': sheet('新增店员账号','<div class="card" style="padding:2px 14px"><div class="field"><label>名称</label><input id="st-name" maxlength="12" placeholder="如：美甲师小王"></div><div class="field"><label>账号</label><input id="st-user" maxlength="20" autocapitalize="off" placeholder="字母/数字/下划线"></div><div class="field"><label>密码</label><input id="st-pass" type="password" autocomplete="new-password" placeholder="6–64 位"></div></div><div class="muted" style="font-size:12px;margin:6px 2px">新账号默认没有任何操作权限，创建后可逐项授权</div><button class="btn" style="width:100%;margin-top:8px" data-a="stCreate">创建</button>');break;
+  case 'stCreate': api('POST','/api/merchant/staff',{name:document.getElementById('st-name').value.trim(),username:document.getElementById('st-user').value.trim(),password:document.getElementById('st-pass').value},'m').then(function(u){closeSheet();toast('已创建「'+u.name+'」，默认无权限');mLoad('mstaff')},fail);break;
   case 'goMReviews': S.rvF=v||'all';M.rv=null;go('mreviews');break;
   case 'goMFeedback': S.fbF='open';M.fb=null;go('mfeedback');break;
   case 'rvF': S.rvF=v;mLoad('mreviews');break;
   case 'fbF': S.fbF=v;mLoad('mfeedback');break;
-  case 'rvAct': var ra=v.split('|');api('POST','/api/merchant/reviews/'+ra[1]+'/'+ra[0],null,'m').then(function(){toast({hide:'已隐藏，不再公开展示',unhide:'已恢复公开',approve:'已通过，公开展示'}[ra[0]]);mLoad('mreviews')},fail);break;
-  case 'rvReply': var rr=M.rv.items.filter(function(x){return x.id===+v})[0];if(rr)rpSheet(rr);break;
+  case 'rvAct': var ra=v.split('|');if(!can(ra[0]==='approve'?'review.approve':'review.hide')){noPerm(ra[0]==='approve'?'审核评价':'隐藏/显示评价');break}api('POST','/api/merchant/reviews/'+ra[1]+'/'+ra[0],null,'m').then(function(){toast({hide:'已隐藏，不再公开展示',unhide:'已恢复公开',approve:'已通过，公开展示'}[ra[0]]);mLoad('mreviews')},fail);break;
+  case 'rvReply': if(!can('review.reply')){noPerm('回复评价');break}var rr=M.rv.items.filter(function(x){return x.id===+v})[0];if(rr)rpSheet(rr);break;
   case 'rpSave': var rt=document.getElementById('rp-text').value.trim();if(!rt){toast('请填写回复内容');break}
     api('PUT','/api/merchant/reviews/'+S.rpId+'/reply',{text:rt},'m').then(function(){closeSheet();toast('回复已发布');mLoad('mreviews')},fail);break;
-  case 'fbSt': var fs=v.split('|');api('PUT','/api/merchant/feedback/'+fs[1],{status:fs[0]},'m').then(function(){toast('已更新状态');mLoad('mfeedback')},fail);break;
+  case 'fbSt': if(!can('feedback.handle')){noPerm('处理意见反馈');break}var fs=v.split('|');api('PUT','/api/merchant/feedback/'+fs[1],{status:fs[0]},'m').then(function(){toast('已更新状态');mLoad('mfeedback')},fail);break;
   case 'fbNote': var fn=M.fb.items.filter(function(x){return x.id===+v})[0];S.fbNoteId=+v;
     sheet('内部备注','<div class="muted" style="font-size:12px;margin-bottom:6px">仅商家可见，顾客看不到</div><textarea id="fbn-text" class="ta" maxlength="200" placeholder="处理记录，如：已电话联系，下次到店赠送护理">'+esc(fn?fn.note:'')+'</textarea><button class="btn" style="width:100%;margin-top:10px" data-a="fbNoteSave">保存备注</button>');break;
   case 'fbNoteSave': api('PUT','/api/merchant/feedback/'+S.fbNoteId,{note:document.getElementById('fbn-text').value},'m').then(function(){closeSheet();toast('备注已保存');mLoad('mfeedback')},fail);break;
@@ -621,7 +655,7 @@ app.addEventListener('click',function(e){
   case 'abListDel': var lp=v.split('|'),lk=lp[0].split('.'),la=sv(lp[0]).slice();la.splice(+lp[1],1);var lo={};lo[lk[0]]={};lo[lk[0]][lk[1]]=la;saveRule(lo,'已删除，立即生效');break;
   case 'abListAdd': var li=app.querySelector('input[data-list="'+v+'"]'),lv=(li&&li.value||'').trim();if(!lv){toast('请输入内容');break}
     var lk2=v.split('.'),lo2={};lo2[lk2[0]]={};lo2[lk2[0]][lk2[1]]=sv(v).concat([lv]);saveRule(lo2,'已添加「'+lv+'」');break;
-  case 'shopSave': if(!isOwner()){toast('员工账号不能修改设置');break}
+  case 'shopSave': if(!isOwner()){toast('门店信息仅店主可修改');break}
     api('PUT','/api/merchant/shop',{phone:document.getElementById('shop-phone').value.trim(),address:document.getElementById('shop-addr').value.trim()},'m').then(function(){toast('门店联系方式已保存');loadShop();mLoad('abset')},fail);break;
   case 'imgDel': S.imgctx.items.splice(+v,1);refreshImgs();break;
   case 'imgCover': var mv=S.imgctx.items.splice(+v,1)[0];S.imgctx.items.unshift(mv);refreshImgs();toast('已设为封面，保存后生效');break;

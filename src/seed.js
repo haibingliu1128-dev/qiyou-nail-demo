@@ -14,6 +14,7 @@ const SERVICES = [
 const ACCOUNTS = [
   { username: 'owner', password: process.env.DEMO_OWNER_PASSWORD || 'qiyou2026', role: 'owner', display_name: '店主（演示）' },
   { username: 'staff', password: process.env.DEMO_STAFF_PASSWORD || 'staff2026', role: 'staff', display_name: '美甲师（演示）' },
+  { username: 'staff2', password: process.env.DEMO_STAFF2_PASSWORD || 'staff2026', role: 'staff', display_name: '前台小林（演示）' },
 ];
 async function ensureAccounts(repo, auth) {
   for (const a of ACCOUNTS) if (!repo.getMerchantByUsername(a.username)) repo.insertMerchant({ ...a, password_hash: await auth.hashPassword(a.password) });

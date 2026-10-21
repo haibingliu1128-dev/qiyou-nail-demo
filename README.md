@@ -23,14 +23,14 @@ npm run backup         # SQLite 热备份到 backups/
 
 - 顾客端：`http://<host>:3100/`
 - 商家端：`http://<host>:3100/#merchant`（或 `/m`）
-- 演示账号：店主 `owner / qiyou2026`（可改设置、服务、看日志、重置演示）；员工 `staff / staff2026`（只能处理预约、拉黑/解除，设置只读）。密码可用 `DEMO_OWNER_PASSWORD` / `DEMO_STAFF_PASSWORD` 在**首次启动前**修改。
+- 演示账号：店主 `owner / qiyou2026`（全部权限）；店员 `staff / staff2026`（美甲师（演示））、`staff2 / staff2026`（前台小林（演示））。店员默认可以处理预约、拉黑/解除，其余操作需店主在「店员权限」里逐项授权（见下文）。密码可用 `DEMO_OWNER_PASSWORD` / `DEMO_STAFF_PASSWORD` / `DEMO_STAFF2_PASSWORD` 在**首次启动前**修改。
 - 开发模式看验证码：点「获取验证码」后，验证码直接显示在弹层里（`DEV_SHOW_SMS_CODE=1`）；也会写进服务日志 `[mock-sms] 手机号 验证码 xxxxxx`，并可通过 `GET /api/dev/sms-outbox?phone=手机号` 查看最近 10 条。**上线必须设为 0**（此时接口不再返回验证码、发件箱接口关闭）。
 
 ## 部署到 Render（免费 Web Service）
 本仓库已带 `render.yaml`（Blueprint）：
 1. 把仓库推到 GitHub（公开仓库即可）。
 2. Render 控制台 → **New → Blueprint** → 选择该仓库 → Apply。会创建一个 free 计划的 Node Web Service：`npm ci` 构建、`npm start` 启动、健康检查 `/api/health`，`APP_SECRET` 自动生成。
-3. 部署完成后：顾客端 `https://<服务名>.onrender.com/`，商家端 `https://<服务名>.onrender.com/#merchant`（演示账号 owner / qiyou2026、staff / staff2026）。
+3. 部署完成后：顾客端 `https://<服务名>.onrender.com/`，商家端 `https://<服务名>.onrender.com/#merchant`（演示账号 owner / qiyou2026、staff / staff2026、staff2 / staff2026）。
 
 说明：
 - 服务监听 `process.env.PORT`（Render 自动注入）和 `0.0.0.0`。
@@ -67,7 +67,7 @@ test/e2e.py              端到端测试
 ### 数据表
 `shop`（营业时间 / 时段步长 / 可约天数 / 提前量 / 同时可服务人数）· `services`（价格、时长、单项定金）· `settings`（防占号规则 JSON）·
 `customers`（手机号、验证时间、黑名单、限制解除时间、频率锁）· `bookings`（状态流、定金、保留到期、爽约来源）· `customer_events`（预约/取消记录，用于防刷与每月取消次数）·
-`payments` · `sms_codes`（只存 HMAC 哈希）· `merchant_users`（bcrypt，owner/staff）· `sessions`（只存令牌 SHA-256）· `login_failures` · `audit_log`。金额单位为分。
+`payments` · `sms_codes`（只存 HMAC 哈希）· `merchant_users`（bcrypt，owner/staff，`perms` 为店员授权 JSON）· `sessions`（只存令牌 SHA-256）· `login_failures` · `audit_log`。金额单位为分。
 
 ### 预约状态流
 ```
@@ -130,7 +130,10 @@ awaiting_payment / pending / confirmed ─顾客或商家取消→ cancelled（�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | /api/merchant/login `{username,password}` | 15 分钟内错 5 次锁定 |
-| POST | /api/merchant/logout · GET /api/merchant/me | |
+| POST | /api/merchant/logout · GET /api/merchant/me | `me` 返回 `{id,username,name,role,perms}`，`perms` 为当前生效的权限（店主全部为 true） |
+| GET | /api/merchant/staff | 店员列表 + 权限项定义（**仅店主**） |
+| POST | /api/merchant/staff `{username,name,password}` | 新增店员账号，默认无任何授权（仅店主） |
+| PUT | /api/merchant/staff/:id `{perms,active,name,password}` | 修改授权（部分更新，未知权限项 400）/ 停用 / 改名 / 重置密码；停用或重置密码会让该店员已登录的会话立即失效（仅店主） |
 | GET | /api/merchant/dashboard | 今日/待确认/待服务/本周营业额估算 |
 | GET | /api/merchant/bookings?scope=today\|upcoming\|pending\|all | |
 | POST | /api/merchant/bookings/:id/{accept,reject,arrive,done,noshow,cancel} | 状态校验 + 自动退款/定金不退 |
@@ -138,22 +141,42 @@ awaiting_payment / pending / confirmed ─顾客或商家取消→ cancelled（�
 | GET | /api/merchant/customers?q= | 顾客、爽约次数、受限/黑名单 |
 | POST | /api/merchant/customers/blacklist `{phone,on,reason}` | 拉黑/移出 |
 | POST | /api/merchant/customers/:phone/clear | 解除爽约限制与频率锁 |
-| GET/PUT | /api/merchant/settings | 读取（含 schema 与范围）/ 部分更新（店主，服务端校验） |
+| GET/PUT | /api/merchant/settings | 读取（含 schema 与范围）/ 部分更新（服务端校验；防占号规则需「修改防占号规则」，评价与反馈开关仅店主） |
 | POST | /api/merchant/settings/reset | 恢复默认（店主） |
-| GET/POST/PUT/DELETE | /api/merchant/services[/:id] | 服务管理、单项定金、`images:[图片ID…]`（≤3 张，第一张为封面；店主；删除=下架） |
-| POST | /api/merchant/images | 上传图片（店主）。请求体为图片二进制，`Content-Type: image/jpeg\|png\|webp`；≤2MB；按文件头魔数校验真实格式；返回 `{id,url}` |
-| GET | /api/merchant/audit | 操作日志（店主） |
-| GET | /api/merchant/reviews?filter=all\|unreplied\|low\|pending\|hidden | 评价管理（含打码手机号、订单号、时间；店主查看后清除低分提醒） |
-| PUT | /api/merchant/reviews/:id/reply `{text}` | 回复 / 修改回复（店主；一条回复） |
-| POST | /api/merchant/reviews/:id/{hide,unhide,approve} | 隐藏 / 取消隐藏 / 通过审核（店主） |
-| GET | /api/merchant/feedback?status=open\|doing\|done | 反馈收件箱（顾客选择回访时显示完整号码） |
-| PUT | /api/merchant/feedback/:id `{status,note}` | 处理状态 + 内部备注（店主） |
+| GET/POST/PUT/DELETE | /api/merchant/services[/:id] | 服务管理、单项定金、`images:[图片ID…]`（≤3 张，第一张为封面；需「管理服务与图片」；删除=下架） |
+| POST | /api/merchant/images | 上传图片（需「管理服务与图片」）。请求体为图片二进制，`Content-Type: image/jpeg\|png\|webp`；≤2MB；按文件头魔数校验真实格式；返回 `{id,url}` |
+| GET | /api/merchant/audit | 操作日志（仅店主；含操作人角色与姓名 `actorRole` / `actorDisplay`） |
+| GET | /api/merchant/reviews?filter=all\|unreplied\|low\|pending\|hidden | 评价管理（含打码手机号、订单号、时间；店员可查看；店主查看后清除低分提醒） |
+| PUT | /api/merchant/reviews/:id/reply `{text}` | 回复 / 修改回复（需「回复评价」；一条回复，记录回复人） |
+| POST | /api/merchant/reviews/:id/{hide,unhide,approve} | 隐藏 / 取消隐藏（需「隐藏/显示评价」）/ 通过审核（需「审核评价」）；记录操作人 |
+| GET | /api/merchant/feedback?status=open\|doing\|done | 反馈收件箱（顾客选择回访、且为店主或有「查看顾客完整手机号」时显示完整号码，否则打码） |
+| PUT | /api/merchant/feedback/:id `{status,note}` | 处理状态 + 内部备注（需「处理意见反馈」；记录处理人） |
 | GET | /api/merchant/inbox | 角标计数：待回复、新低分、待审核、待处理反馈 |
 | PUT | /api/merchant/shop `{phone,address}` | 门店电话/地址（「联系商家」用；店主） |
 | GET | /api/merchant/stream | SSE：新预约/状态变化实时推送 |
 | POST | /api/merchant/demo-reset | 重置演示数据（DEMO_MODE=1，店主） |
 
-错误统一为 `{ "error": { "code": "LIMIT_OPEN", "message": "每人最多同时保留 2 个未完成的预约（门店设置）…" } }`，消息里引用当前设置值。
+错误统一为 `{ "error": { "code": "LIMIT_OPEN", "message": "每人最多同时保留 2 个未完成的预约（门店设置）…" } }`，消息里引用当前设置值。店员无权限时返回 `403 NO_PERMISSION`（`perm` 字段为缺少的权限项），仅店主可做的操作返回 `403 OWNER_ONLY`。
+
+## 店员权限
+店主在「商家后台 → 店员权限」按店员账号逐项授权，可以有多个店员账号（可新增、停用、重置密码）。**所有授权默认关闭**。
+
+| 权限项（key） | 允许的操作 |
+|---|---|
+| 回复评价 `review.reply` | 回复顾客评价、修改回复 |
+| 隐藏/显示评价 `review.hide` | 隐藏评价或恢复公开 |
+| 审核评价 `review.approve` | 「先审后发」时通过待审核评价 |
+| 处理意见反馈 `feedback.handle` | 修改反馈处理状态、填写内部备注 |
+| 查看顾客完整手机号 `customer.phone` | 意见反馈里顾客要求回访时显示完整号码（未授权时打码） |
+| 管理服务与图片 `service.manage` | 新增/编辑/下架服务、上传服务图片、单项定金 |
+| 修改防占号规则 `rules.edit` | 数量限制、取消、爽约、定金等规则（不含评价与反馈开关、恢复默认、门店信息） |
+
+- **始终仅店主**：店员权限本身、评价与反馈的功能开关和子设置、恢复默认设置、门店电话/地址、操作日志、重置演示。
+- **服务端逐请求校验**：每次请求都从数据库重新读取账号和授权，所以店主改完**立即生效**（同一个已登录的店员令牌，下一次请求就按新权限判断）。无权限返回 `403 NO_PERMISSION` 和中文提示（如「店主未授权你「回复评价」，如需操作请联系店主在「店员权限」中开通」）。
+- **界面同步**：店员页面只显示有权限的按钮；店主修改授权后通过商家 SSE 推送 `perms` 事件，店员页面自动刷新并提示「店主已更新你的权限，立即生效」。
+- **操作留痕**：评价回复显示回复人和时间；隐藏/审核记录操作人（`moderated_by/at`），反馈记录最后处理人（`handled_by/at`）；操作日志可按「评价与反馈」「店员操作」筛选，显示店员姓名、账号和时间。
+- 店员一直可以处理预约、查看顾客和拉黑/解除（与之前相同）；预约和顾客列表里的手机号仍完整显示，「查看顾客完整手机号」只控制意见反馈回访号码。
+- 截图：`nail-render-shots/30_owner_staff_permissions.png`（店主授权页）、`31_staff_reply_allowed.png`（获授权后店员回复）、`32_staff_denied.png` / `32b_staff_denied_settings.png`（未授权）、`33_owner_audit_staff_ops.png`（操作日志）。
 
 ## 服务图片
 - 商家在「服务管理 → 新增/编辑服务」里选图（手机上可拍照或从相册选），最多 3 张，第一张为封面，可「设为封面 / 更换 / 删除」。
@@ -166,7 +189,7 @@ awaiting_payment / pending / confirmed ─顾客或商家取消→ cancelled（�
 - 演示服务的默认配图在 `assets/seed-images/`，由 `scripts/gen_seed_images.py` 用 SVG 程序绘制后导出（无下载素材、无真人），首次启动写入数据库；老数据库升级到该迁移时会给演示服务补上默认图。
 
 ## 评价与反馈
-四个部分都在「商家后台 → 防占号 → 设置 → 评价与反馈」里单独开关（默认全部开启，仅店主可改，修改后顾客页面通过 `/api/stream` 实时生效）。关闭的功能在顾客端隐藏，服务端同样拒绝（`403 FEATURE_OFF`，带中文提示）。
+四个部分都在「商家后台 → 防占号 → 设置 → 评价与反馈」里单独开关（默认全部开启，仅店主可改，修改后顾客页面通过 `/api/stream` 实时生效）。店员能否回复/隐藏/审核/处理反馈由「店员权限」决定。关闭的功能在顾客端隐藏，服务端同样拒绝（`403 FEATURE_OFF`，带中文提示）。
 
 | 设置 | 说明 |
 |---|---|

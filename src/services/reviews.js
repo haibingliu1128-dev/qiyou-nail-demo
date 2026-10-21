@@ -3,6 +3,7 @@
 // 每项功能都受商家设置开关控制：关闭后前端隐藏，服务端同样拒绝（403 FEATURE_OFF）。
 const U = require('../lib/util');
 const Rules = require('./rules');
+const Perm = require('./perms');
 const { AppError, maskPhone } = U;
 const DAY = 864e5;
 const FB_STATUS = { open: '待处理', doing: '处理中', done: '已处理' };
@@ -57,6 +58,7 @@ function createReviewService(ctx) {
     createdAt: r.created_at, editableUntil: r.created_at + C0.review.editDays * DAY, canEdit: C0.review.on && Date.now() < r.created_at + C0.review.editDays * DAY,
     reply: C0.reply.on && r.reply_text ? { text: r.reply_text, at: r.reply_at } : null });
   const merchantDto = (r, C0) => ({ ...publicDto(r, C0), reply: r.reply_text ? { text: r.reply_text, at: r.reply_at, by: r.reply_by } : null, status: r.status,
+    moderatedBy: r.moderated_by || null, moderatedAt: r.moderated_at || null,
     phone: maskPhone(r.phone), bookingId: r.booking_id, bookingCode: r.code, date: r.date, time: U.toHm(r.start_min), low: r.stars <= C0.review.lowStar, alertNew: r.stars <= C0.review.lowStar && !r.alert_seen });
 
   // ---- 顾客端公开信息 ----
@@ -181,7 +183,7 @@ function createReviewService(ctx) {
   }
   const countsDto = c => ({ total: c.total || 0, unreplied: c.unreplied || 0, low: c.low || 0, lowNew: c.low_new || 0, pending: c.pending || 0, hidden: c.hidden || 0 });
   function reply(user, id, text, ip) {
-    owner(user); const C0 = C(); off(C0.reply.on, '商家回复功能已关闭（可在设置中开启）');
+    const C0 = C(); off(C0.reply.on, '商家回复功能已关闭（可在设置中开启）'); Perm.need(user, 'review.reply');
     const r = repo.getReview(+id); if (!r) throw new AppError(404, 'NOT_FOUND', '评价不存在');
     const raw = String(text == null ? '' : text).trim();
     if (!raw) throw new AppError(400, 'BAD_INPUT', '请填写回复内容');
@@ -192,41 +194,44 @@ function createReviewService(ctx) {
     return merchantDto(repo.getReview(r.id), C0);
   }
   function setVisibility(user, id, action, ip) {
-    owner(user); const C0 = C();
-    const r = repo.getReview(+id); if (!r) throw new AppError(404, 'NOT_FOUND', '评价不存在');
+    const C0 = C();
     const st = { hide: 'hidden', unhide: 'public', approve: 'public' }[action];
     if (!st) throw new AppError(400, 'BAD_INPUT', '未知操作');
+    Perm.need(user, action === 'approve' ? 'review.approve' : 'review.hide');
+    const r = repo.getReview(+id); if (!r) throw new AppError(404, 'NOT_FOUND', '评价不存在');
     if (action === 'approve' && r.status !== 'pending') throw new AppError(409, 'NOT_PENDING', '该评价不在待审核状态');
-    repo.updateReview(r.id, { status: st });
+    repo.updateReview(r.id, { status: st, moderated_by: user.display_name || user.username, moderated_at: Date.now() });
     audit(user, 'review.' + action, 'review:' + r.id, null, ip);
     bus.emit('change', { type: 'review', id: r.id });
     return merchantDto(repo.getReview(r.id), C0);
   }
   // ---- 商家：反馈收件箱 ----
-  const fbMerchant = f => ({ ...fbOwn(f), note: f.note || '', seed: !!f.seed, name: f.cname || '',
-    phone: f.contact === 'none' ? maskPhone(f.phone) : f.phone, unseen: !f.seen });   // 顾客选择回访时才显示完整号码
+  // 完整号码：顾客选择回访 且 （店主 或 店员被授权「查看顾客完整手机号」）
+  const fbMerchant = (f, user) => ({ ...fbOwn(f), note: f.note || '', seed: !!f.seed, name: f.cname || '',
+    phone: f.contact !== 'none' && Perm.can(user, 'customer.phone') ? f.phone : maskPhone(f.phone), phoneMasked: !(f.contact !== 'none' && Perm.can(user, 'customer.phone')),
+    unseen: !f.seen, handledBy: f.handled_by || null, handledAt: f.handled_at || null });
   function merchantFeedback(user, status) {
-    const list = repo.listFeedback(['open', 'doing', 'done'].includes(status) ? status : null).map(fbMerchant);
+    const list = repo.listFeedback(['open', 'doing', 'done'].includes(status) ? status : null).map(f => fbMerchant(f, user));
     if (repo.markFeedbackSeen()) bus.emit('change', { type: 'feedback.seen' });
     return { items: list, counts: repo.feedbackCounts() };
   }
   function updateFeedback(user, id, body, ip) {
-    owner(user);
+    Perm.need(user, 'feedback.handle');
     const f = repo.getFeedback(+id); if (!f) throw new AppError(404, 'NOT_FOUND', '反馈不存在');
     const p = {};
     if (body.status !== undefined) { if (!FB_STATUS[body.status]) throw new AppError(400, 'BAD_INPUT', '状态不正确'); p.status = body.status; }
     if (body.note !== undefined) p.note = Rules.cleanText(body.note, 200) || null;
-    repo.updateFeedback(f.id, p);
+    repo.updateFeedback(f.id, { ...p, handled_by: user.display_name || user.username, handled_at: Date.now() });
     audit(user, 'feedback.update', 'feedback:' + f.id, p, ip);
     bus.emit('change', { type: 'feedback', id: f.id });
-    return fbMerchant(repo.getFeedback(f.id));
+    return fbMerchant(repo.getFeedback(f.id), user);
   }
   function counts() {
     const C0 = C();
     return { reviews: countsDto(repo.reviewCounts(C0.review.lowStar)), feedback: repo.feedbackCounts(), lowStar: C0.review.lowStar };
   }
   function updateShop(user, body, ip) {
-    owner(user);
+    Perm.ownerOnly(user, '修改门店信息');
     const shop = repo.getShop(), phone = String(body.phone == null ? shop.phone : body.phone).trim(), address = Rules.cleanText(body.address == null ? shop.address : body.address, 60);
     if (!/^[0-9+\- ]{5,20}$/.test(phone)) throw new AppError(400, 'BAD_PHONE', '门店电话格式不正确（5–20 位数字，可含 - 和空格）');
     if (!address) throw new AppError(400, 'BAD_INPUT', '请填写门店地址');

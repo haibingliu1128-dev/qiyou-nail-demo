@@ -321,7 +321,7 @@ test('图片上传：非商家 / 员工被拒', async () => {
   const ct = await login(newPhone());
   assert.equal((await up(JPG, 'image/jpeg', ct)).status, 401);   // 顾客令牌不能当商家令牌
   const s = await up(JPG, 'image/jpeg', STAFF);
-  assert.equal(s.status, 403); assert.equal(s.body.error.code, 'OWNER_ONLY');
+  assert.equal(s.status, 403); assert.equal(s.body.error.code, 'NO_PERMISSION'); assert.match(s.body.error.message, /管理服务与图片/);
 });
 test('图片上传：格式不对 / 太大被拒', async () => {
   const gif = Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(64)]);
@@ -550,4 +550,108 @@ test('示例评价：公开展示有内容、标记为示例、手机号打码',
   assert.ok(seeds.every(x => /^\d{3}\*{4}\d{4}$/.test(x.who)));
   const shop = (await api('GET', '/api/shop')).body;
   assert.ok(shop.rating.count >= 8 && shop.rating.avg >= 1 && shop.rating.tags.length);
+});
+
+// ---------------- 店员权限 ----------------
+const staffId = async () => (await api('GET', '/api/merchant/me', null, STAFF)).body.id;
+const grant = async (perms) => api('PUT', '/api/merchant/staff/' + await staffId(), { perms }, OWNER);
+
+test('店员权限：默认全部关闭；店员看不到、改不了权限；店主可管理多个店员', async () => {
+  const me = (await api('GET', '/api/merchant/me', null, STAFF)).body;
+  assert.equal(me.role, 'staff'); assert.ok(Object.values(me.perms).every(v => v === false), '默认全部关闭');
+  assert.ok(Object.values((await api('GET', '/api/merchant/me', null, OWNER)).body.perms).every(v => v === true), '店主全部允许');
+  const l = await api('GET', '/api/merchant/staff', null, OWNER);
+  assert.equal(l.status, 200); assert.ok(l.body.staff.length >= 2, '演示数据有两个店员'); assert.equal(l.body.perms.length, 7);
+  assert.equal((await api('GET', '/api/merchant/staff', null, STAFF)).status, 403);
+  const self = await api('PUT', '/api/merchant/staff/' + me.id, { perms: { 'review.reply': true } }, STAFF);
+  assert.equal(self.status, 403); assert.match(self.body.error.message, /仅店主/);
+  assert.equal((await api('POST', '/api/merchant/staff', { username: 'hack1', name: 'x', password: '123456' }, STAFF)).status, 403);
+  assert.equal((await api('PUT', '/api/merchant/staff/' + me.id, { perms: { 'staff.manage': true } }, OWNER)).status, 400, '未知权限');
+  const ownerId = (await api('GET', '/api/merchant/me', null, OWNER)).body.id;
+  assert.equal((await api('PUT', '/api/merchant/staff/' + ownerId, { active: false }, OWNER)).status, 404, '不能把店主当店员改');
+  // 新增店员 → 默认无权限 → 停用后立即下线
+  const c = await api('POST', '/api/merchant/staff', { username: 'staff_t1', name: '测试店员', password: 'pass1234' }, OWNER);
+  assert.equal(c.status, 201); assert.ok(Object.values(c.body.perms).every(v => !v));
+  assert.equal((await api('POST', '/api/merchant/staff', { username: 'staff_t1', name: '重复', password: 'pass1234' }, OWNER)).status, 409);
+  const t = (await api('POST', '/api/merchant/login', { username: 'staff_t1', password: 'pass1234' })).body.token;
+  assert.ok(t); assert.equal((await api('GET', '/api/merchant/dashboard', null, t)).status, 200);
+  await api('PUT', '/api/merchant/staff/' + c.body.id, { active: false }, OWNER);
+  assert.equal((await api('GET', '/api/merchant/dashboard', null, t)).status, 401, '停用后已登录会话立即失效');
+  assert.equal((await api('POST', '/api/merchant/login', { username: 'staff_t1', password: 'pass1234' })).status, 401);
+});
+
+test('店员权限：逐项授权/收回立即生效（同一登录会话），店主始终允许', async () => {
+  // 准备：一条评价、一条待审核评价、一条要求回访的反馈
+  const phone = newPhone(), tok = await login(phone);
+  const rv = (await api('POST', '/api/reviews', { bookingId: doneBooking(phone), stars: 4, text: '权限测试' }, tok)).body;
+  await setRule({ review: { moderate: 'all' } });
+  const p2 = newPhone(), t2 = await login(p2);
+  const pend = (await api('POST', '/api/reviews', { bookingId: doneBooking(p2), stars: 5 }, t2)).body;
+  await resetRules();
+  const fb = (await api('POST', '/api/feedback', { type: '其他', text: '请回电', contact: 'phone' }, tok)).body;
+  const sid = await staffId();
+  const cases = [
+    ['review.reply', () => api('PUT', `/api/merchant/reviews/${rv.id}/reply`, { text: '店员回复' }, STAFF), /回复评价/],
+    ['review.hide', () => api('POST', `/api/merchant/reviews/${rv.id}/hide`, null, STAFF), /隐藏\/显示评价/],
+    ['review.approve', () => api('POST', `/api/merchant/reviews/${pend.id}/approve`, null, STAFF), /审核评价/],
+    ['feedback.handle', () => api('PUT', `/api/merchant/feedback/${fb.id}`, { status: 'doing', note: '店员备注' }, STAFF), /处理意见反馈/],
+    ['service.manage', () => api('PUT', '/api/merchant/services/1', { desc: '店员改的简介' }, STAFF), /管理服务与图片/],
+    ['rules.edit', () => api('PUT', '/api/merchant/settings', { maxOpen: { v: 3 } }, STAFF), /修改防占号规则/],
+  ];
+  for (const [perm, call, msg] of cases) {
+    const no = await call();
+    assert.equal(no.status, 403, perm + ' 未授权应拒绝'); assert.equal(no.body.error.code, 'NO_PERMISSION'); assert.match(no.body.error.message, msg); assert.equal(no.body.error.perm, perm);
+    assert.equal((await api('PUT', '/api/merchant/staff/' + sid, { perms: { [perm]: true } }, OWNER)).body.perms[perm], true);
+    const yes = await call();
+    assert.equal(yes.status, 200, perm + ' 授权后应允许：' + JSON.stringify(yes.body));
+    await api('PUT', '/api/merchant/staff/' + sid, { perms: { [perm]: false } }, OWNER);
+    assert.equal((await call()).status, 403, perm + ' 收回后立即拒绝');
+  }
+  // 图片上传同属「管理服务与图片」
+  assert.equal((await up(JPG, 'image/jpeg', STAFF)).status, 403);
+  await grant({ 'service.manage': true }); assert.equal((await up(JPG, 'image/jpeg', STAFF)).status, 201); await grant({ 'service.manage': false });
+  // 查看完整手机号（仅限顾客要求回访的反馈）
+  const findFb = async t => (await api('GET', '/api/merchant/feedback', null, t)).body.items.find(x => x.id === fb.id);
+  assert.match((await findFb(STAFF)).phone, /^\d{3}\*{4}\d{4}$/);
+  await grant({ 'customer.phone': true });
+  assert.equal((await findFb(STAFF)).phone, phone);
+  await grant({ 'customer.phone': false });
+  assert.match((await findFb(STAFF)).phone, /\*{4}/);
+  assert.equal((await findFb(OWNER)).phone, phone, '店主始终可见');
+  // 店主始终允许
+  assert.equal((await api('PUT', `/api/merchant/reviews/${rv.id}/reply`, { text: '店主回复' }, OWNER)).status, 200);
+  assert.equal((await api('POST', `/api/merchant/reviews/${rv.id}/unhide`, null, OWNER)).status, 200);
+  assert.equal((await api('PUT', `/api/merchant/feedback/${fb.id}`, { status: 'done' }, OWNER)).status, 200);
+  // 处理人记录 + 操作日志可见店员
+  const m = (await api('GET', '/api/merchant/feedback', null, OWNER)).body.items.find(x => x.id === fb.id);
+  assert.equal(m.handledBy, '店主（演示）');
+  const aud = (await api('GET', '/api/merchant/audit', null, OWNER)).body;
+  assert.ok(aud.some(a => a.actor_name === 'staff' && a.action === 'review.reply' && a.actorRole === 'staff' && a.actorDisplay === '美甲师（演示）'), '日志记录店员回复（含店员姓名）');
+  assert.ok(aud.some(a => a.actor_name === 'staff' && a.action === 'feedback.update'));
+  assert.equal((await api('GET', '/api/merchant/audit', null, STAFF)).status, 403);
+  await setRule({ maxOpen: { v: 2 } });
+});
+
+test('店员权限：即使授权「修改防占号规则」，评价与反馈开关 / 恢复默认 / 门店信息 / 店员权限仍仅店主', async () => {
+  await grant({ 'rules.edit': true, 'service.manage': true, 'review.reply': true, 'review.hide': true, 'review.approve': true, 'feedback.handle': true, 'customer.phone': true });
+  assert.equal((await api('PUT', '/api/merchant/settings', { perDay: { v: 2 } }, STAFF)).status, 200);
+  for (const patch of [{ review: { on: false } }, { reply: { on: false } }, { reviewPublic: { on: false } }, { feedback: { on: false } }, { contact: { on: false } }, { perDay: { v: 3 }, review: { editDays: 3 } }]) {
+    const r = await api('PUT', '/api/merchant/settings', patch, STAFF);
+    assert.equal(r.status, 403, JSON.stringify(patch)); assert.equal(r.body.error.code, 'OWNER_ONLY'); assert.match(r.body.error.message, /评价与反馈/);
+  }
+  assert.equal((await api('POST', '/api/merchant/settings/reset', null, STAFF)).status, 403);
+  assert.equal((await api('PUT', '/api/merchant/shop', { phone: '123456' }, STAFF)).status, 403);
+  assert.equal((await api('PUT', '/api/merchant/staff/' + await staffId(), { perms: { 'rules.edit': false } }, STAFF)).status, 403);
+  assert.equal((await api('PUT', '/api/merchant/settings', { review: { editDays: 3 } }, OWNER)).status, 200, '店主可以');
+  const all = Object.fromEntries((await api('GET', '/api/merchant/staff', null, OWNER)).body.perms.map(p => [p.key, false]));
+  await grant(all); await resetRules();
+  assert.ok(Object.values((await api('GET', '/api/merchant/me', null, STAFF)).body.perms).every(v => !v));
+});
+
+test('店员权限：授权变化通过商家 SSE 推送（店员页面实时刷新）', async () => {
+  const sid = await staffId();
+  const s = sseCollect('/api/merchant/stream?token=' + STAFF); await s.ready; await new Promise(r => setTimeout(r, 80));
+  await grant({ 'review.reply': true });
+  assert.ok(await waitFor(() => s.text().includes(`"type":"perms","userId":${sid}`)), s.text()); s.close();
+  await grant({ 'review.reply': false });
 });
